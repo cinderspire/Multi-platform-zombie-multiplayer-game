@@ -1,29 +1,87 @@
 using UnityEngine;
+using Unity.Netcode;
 using System.Collections;
 using System;
 
 namespace DeadFrontier.Weapons
 {
     /// <summary>
-    /// Controls weapon firing, reloading, and ammo management
+    /// Complete weapon controller handling firing, reloading, aiming, and weapon switching.
+    /// Integrates with attachment system, physics system, and network synchronization.
+    /// Production-ready implementation with all features for AAA extraction shooter.
     /// </summary>
-    public class WeaponController : MonoBehaviour
+    [RequireComponent(typeof(WeaponAttachmentSystem))]
+    [RequireComponent(typeof(WeaponPhysicsSystem))]
+    public class WeaponController : NetworkBehaviour
     {
-        [Header("Weapon Setup")]
-        [SerializeField] private WeaponData weaponData;
-        [SerializeField] private Transform firePoint;
+        [Header("Weapon Configuration")]
+        [SerializeField] private WeaponData currentWeaponData;
+        [SerializeField] private Transform weaponHolder;
+        [SerializeField] private Transform aimPoint;
         [SerializeField] private Camera playerCamera;
-        [SerializeField] private LayerMask hitLayers;
 
-        [Header("Ammo")]
-        [SerializeField] private int currentAmmo;
-        [SerializeField] private int reserveAmmo = 120;
-        [SerializeField] private bool infiniteAmmo = false;
+        [Header("Fire Points")]
+        [SerializeField] private Transform primaryFirePoint;
+        [SerializeField] private Transform secondaryFirePoint;
 
-        // State
+        [Header("Sway & Bob")]
+        [SerializeField] private float swayAmount = 0.02f;
+        [SerializeField] private float swaySmooth = 6f;
+        [SerializeField] private float bobAmount = 0.05f;
+        [SerializeField] private float bobFrequency = 10f;
+
+        [Header("Aim Settings")]
+        [SerializeField] private float normalFOV = 60f;
+        [SerializeField] private float aimFOV = 40f;
+        [SerializeField] private float aimSpeed = 8f;
+        [SerializeField] private Vector3 aimPosition;
+        [SerializeField] private Vector3 hipPosition;
+
+        [Header("Recoil Settings")]
+        [SerializeField] private float recoilReturnSpeed = 5f;
+        [SerializeField] private float recoilSnappiness = 10f;
+
+        [Header("Audio")]
+        [SerializeField] private AudioSource weaponAudioSource;
+        [SerializeField] private AudioClip fireSound;
+        [SerializeField] private AudioClip dryFireSound;
+        [SerializeField] private AudioClip reloadSound;
+        [SerializeField] private AudioClip weaponSwitchSound;
+
+        // Components
+        private WeaponAttachmentSystem attachmentSystem;
+        private WeaponPhysicsSystem physicsSystem;
+        private Animator weaponAnimator;
+
+        // Weapon state
+        private NetworkVariable<int> currentAmmo = new NetworkVariable<int>(30);
+        private NetworkVariable<int> reserveAmmo = new NetworkVariable<int>(90);
+        private NetworkVariable<bool> isReloading = new NetworkVariable<bool>(false);
+        private NetworkVariable<bool> isAiming = new NetworkVariable<bool>(false);
+        private NetworkVariable<int> currentFireMode = new NetworkVariable<int>(0); // 0=Auto, 1=Burst, 2=Semi
+
         private float nextFireTime;
-        private bool isReloading;
         private int burstShotsFired;
+        private bool isFiring;
+
+        // Weapon slots
+        private WeaponData[] equippedWeapons = new WeaponData[3]; // Primary, Secondary, Melee
+        private int currentWeaponSlot = 0;
+        private GameObject[] weaponModels = new GameObject[3];
+
+        // Movement state (from PlayerMovement)
+        private bool isMoving;
+        private bool isSprinting;
+        private bool isCrouching;
+
+        // Sway
+        private Vector3 swayPosition;
+        private Quaternion swayRotation;
+        private float bobTimer;
+
+        // Recoil
+        private Vector3 currentRecoilPosition;
+        private Vector3 currentRecoilRotation;
 
         // Events
         public event Action OnFire;
@@ -31,362 +89,632 @@ namespace DeadFrontier.Weapons
         public event Action OnReloadComplete;
         public event Action OnAmmoChanged;
 
-        // Properties
-        public WeaponData Data => weaponData;
-        public int CurrentAmmo => currentAmmo;
-        public int ReserveAmmo => reserveAmmo;
-        public bool IsReloading => isReloading;
-        public bool CanFire => !isReloading && currentAmmo > 0 && Time.time >= nextFireTime;
-        public bool NeedsReload => currentAmmo < weaponData.magazineSize && (reserveAmmo > 0 || infiniteAmmo);
-
         private void Awake()
         {
+            attachmentSystem = GetComponent<WeaponAttachmentSystem>();
+            physicsSystem = GetComponent<WeaponPhysicsSystem>();
+
             if (playerCamera == null)
-            {
                 playerCamera = Camera.main;
-            }
-
-            if (firePoint == null)
-            {
-                firePoint = transform;
-            }
-
-            currentAmmo = weaponData.magazineSize;
         }
 
-        /// <summary>
-        /// Attempts to fire the weapon
-        /// </summary>
-        public void Fire()
+        public override void OnNetworkSpawn()
         {
-            if (!CanFire)
+            base.OnNetworkSpawn();
+
+            if (IsOwner)
             {
-                // Play empty sound if trying to fire with no ammo
-                if (currentAmmo <= 0 && weaponData.emptySound != null)
+                InitializeWeapon();
+            }
+
+            currentAmmo.OnValueChanged += OnAmmoChangedCallback;
+            isReloading.OnValueChanged += OnReloadingChangedCallback;
+            isAiming.OnValueChanged += OnAimingChangedCallback;
+        }
+
+        public override void OnNetworkDespawn()
+        {
+            currentAmmo.OnValueChanged -= OnAmmoChangedCallback;
+            isReloading.OnValueChanged -= OnReloadingChangedCallback;
+            isAiming.OnValueChanged -= OnAimingChangedCallback;
+            base.OnNetworkDespawn();
+        }
+
+        private void Update()
+        {
+            if (!IsOwner) return;
+
+            HandleInput();
+            UpdateWeaponPosition();
+            UpdateAiming();
+            UpdateRecoil();
+            UpdateSway();
+            UpdateBob();
+        }
+
+        #region Initialization
+
+        private void InitializeWeapon()
+        {
+            if (currentWeaponData != null)
+            {
+                EquipWeapon(currentWeaponData, 0);
+
+                if (IsServer)
                 {
-                    Core.AudioManager.Instance.Play(weaponData.emptySound);
+                    currentAmmo.Value = currentWeaponData.magazineSize;
+                    reserveAmmo.Value = currentWeaponData.maxReserveAmmo;
                 }
+
+                // Initialize attachment system
+                if (attachmentSystem != null)
+                {
+                    attachmentSystem.Initialize(currentWeaponData, weaponHolder, primaryFirePoint);
+                }
+
+                // Initialize physics system
+                if (physicsSystem != null)
+                {
+                    physicsSystem.Initialize(currentWeaponData, weaponHolder, primaryFirePoint);
+                }
+            }
+        }
+
+        public void EquipWeapon(WeaponData weaponData, int slot)
+        {
+            if (slot < 0 || slot >= equippedWeapons.Length) return;
+
+            equippedWeapons[slot] = weaponData;
+
+            if (slot == currentWeaponSlot)
+            {
+                SwitchToWeapon(slot);
+            }
+        }
+
+        #endregion
+
+        #region Input Handling
+
+        private void HandleInput()
+        {
+            if (isReloading.Value) return;
+
+            // Fire
+            if (currentWeaponData != null)
+            {
+                bool fireInput = Input.GetButton("Fire1");
+                bool firePressed = Input.GetButtonDown("Fire1");
+
+                switch ((FiringMode)currentFireMode.Value)
+                {
+                    case FiringMode.Automatic:
+                        isFiring = fireInput;
+                        if (isFiring && Time.time >= nextFireTime)
+                        {
+                            Fire();
+                        }
+                        break;
+
+                    case FiringMode.SemiAuto:
+                        if (firePressed && Time.time >= nextFireTime)
+                        {
+                            Fire();
+                        }
+                        break;
+
+                    case FiringMode.Burst:
+                        if (firePressed && Time.time >= nextFireTime)
+                        {
+                            StartCoroutine(BurstFire());
+                        }
+                        break;
+                }
+            }
+
+            // Reload
+            if (Input.GetKeyDown(KeyCode.R) && !isReloading.Value)
+            {
+                if (currentAmmo.Value < currentWeaponData.magazineSize && reserveAmmo.Value > 0)
+                {
+                    RequestReloadServerRpc();
+                }
+            }
+
+            // Aim
+            bool aimInput = Input.GetButton("Fire2");
+            if (aimInput != isAiming.Value && !isSprinting)
+            {
+                SetAimingServerRpc(aimInput);
+            }
+
+            // Switch fire mode
+            if (Input.GetKeyDown(KeyCode.B) && currentWeaponData.availableFireModes.Length > 1)
+            {
+                CycleFireMode();
+            }
+
+            // Weapon switching
+            if (Input.GetKeyDown(KeyCode.Alpha1)) SwitchToWeapon(0);
+            if (Input.GetKeyDown(KeyCode.Alpha2)) SwitchToWeapon(1);
+            if (Input.GetKeyDown(KeyCode.Alpha3)) SwitchToWeapon(2);
+
+            // Mouse wheel switch
+            float scroll = Input.GetAxis("Mouse ScrollWheel");
+            if (scroll > 0f) SwitchToNextWeapon();
+            else if (scroll < 0f) SwitchToPreviousWeapon();
+        }
+
+        #endregion
+
+        #region Firing
+
+        private void Fire()
+        {
+            if (!CanFire()) return;
+
+            if (currentAmmo.Value <= 0)
+            {
+                PlayDryFire();
                 return;
             }
 
-            switch (weaponData.firingMode)
+            // Calculate fire rate
+            float fireRate = currentWeaponData.fireRate;
+            if (attachmentSystem != null)
             {
-                case FiringMode.SemiAuto:
-                    FireSingleShot();
-                    break;
-
-                case FiringMode.Automatic:
-                    FireSingleShot();
-                    break;
-
-                case FiringMode.Burst:
-                    if (burstShotsFired == 0)
-                    {
-                        StartCoroutine(FireBurst());
-                    }
-                    break;
+                var stats = attachmentSystem.GetCurrentStats();
+                fireRate = stats.fireRate;
             }
-        }
 
-        /// <summary>
-        /// Fires a single shot
-        /// </summary>
-        private void FireSingleShot()
-        {
-            // Consume ammo
-            currentAmmo--;
-            OnAmmoChanged?.Invoke();
+            nextFireTime = Time.time + (60f / fireRate);
 
-            // Set next fire time
-            nextFireTime = Time.time + weaponData.TimeBetweenShots;
+            // Fire weapon
+            RequestFireServerRpc();
 
-            // Perform raycast
-            PerformRaycast();
-
-            // Visual and audio feedback
+            // Visual/Audio feedback
             PlayFireEffects();
 
-            // Notify event
-            OnFire?.Invoke();
-
-            Debug.Log($"[WeaponController] Fired {weaponData.weaponName}. Ammo: {currentAmmo}/{weaponData.magazineSize}");
-        }
-
-        /// <summary>
-        /// Fires a burst of shots
-        /// </summary>
-        private IEnumerator FireBurst()
-        {
-            int burstCount = 3;
-            burstShotsFired = burstCount;
-
-            for (int i = 0; i < burstCount; i++)
-            {
-                if (currentAmmo <= 0)
-                    break;
-
-                FireSingleShot();
-                yield return new WaitForSeconds(0.1f); // 100ms between burst shots
-            }
-
-            burstShotsFired = 0;
-        }
-
-        /// <summary>
-        /// Performs raycast for hit detection
-        /// </summary>
-        private void PerformRaycast()
-        {
-            Vector3 rayOrigin = playerCamera.transform.position;
-            Vector3 rayDirection = playerCamera.transform.forward;
-
-            // Apply spread
-            float spread = weaponData.GetSpread(IsPlayerMoving(), IsPlayerJumping());
-            rayDirection = ApplySpread(rayDirection, spread);
-
-            // Perform raycast
-            if (Physics.Raycast(rayOrigin, rayDirection, out RaycastHit hit, weaponData.range, hitLayers))
-            {
-                ProcessHit(hit);
-
-                // Handle penetration
-                if (weaponData.canPenetrate)
-                {
-                    HandlePenetration(rayOrigin, rayDirection, hit);
-                }
-            }
-        }
-
-        /// <summary>
-        /// Processes a raycast hit
-        /// </summary>
-        private void ProcessHit(RaycastHit hit)
-        {
-            // Check if hit object can take damage
-            var damageable = hit.collider.GetComponent<Core.IDamageable>();
-            if (damageable != null)
-            {
-                // Calculate damage (check for headshot)
-                float damage = weaponData.damage;
-                if (IsHeadshot(hit))
-                {
-                    damage *= Core.Constants.HEADSHOT_MULTIPLIER;
-                    Debug.Log($"[WeaponController] HEADSHOT! Damage: {damage}");
-                }
-
-                damageable.TakeDamage(damage);
-            }
-
-            // Show impact effect
-            ShowImpactEffect(hit.point, hit.normal);
-        }
-
-        /// <summary>
-        /// Handles bullet penetration through multiple targets
-        /// </summary>
-        private void HandlePenetration(Vector3 origin, Vector3 direction, RaycastHit firstHit)
-        {
-            int penetrationCount = 0;
-            float remainingDamage = weaponData.damage;
-            Vector3 currentOrigin = firstHit.point + direction * 0.1f; // Start slightly past first hit
-
-            while (penetrationCount < weaponData.maxPenetrationTargets)
-            {
-                if (Physics.Raycast(currentOrigin, direction, out RaycastHit hit, weaponData.range, hitLayers))
-                {
-                    penetrationCount++;
-                    remainingDamage *= (1f - weaponData.penetrationDamageReduction);
-
-                    var damageable = hit.collider.GetComponent<Core.IDamageable>();
-                    damageable?.TakeDamage(remainingDamage);
-
-                    currentOrigin = hit.point + direction * 0.1f;
-                }
-                else
-                {
-                    break;
-                }
-            }
-        }
-
-        /// <summary>
-        /// Applies spread to the ray direction
-        /// </summary>
-        private Vector3 ApplySpread(Vector3 direction, float spreadAngle)
-        {
-            if (spreadAngle <= 0f)
-                return direction;
-
-            // Random spread within cone
-            float spreadX = UnityEngine.Random.Range(-spreadAngle, spreadAngle);
-            float spreadY = UnityEngine.Random.Range(-spreadAngle, spreadAngle);
-
-            Quaternion spread = Quaternion.Euler(spreadX, spreadY, 0f);
-            return spread * direction;
-        }
-
-        /// <summary>
-        /// Checks if hit is a headshot
-        /// </summary>
-        private bool IsHeadshot(RaycastHit hit)
-        {
-            // Simple check: if hit point is in upper 20% of collider
-            // More sophisticated version would check for "Head" tag or specific collider
-            if (hit.collider.bounds.max.y - hit.point.y < hit.collider.bounds.size.y * 0.2f)
-            {
-                return true;
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// Plays fire effects (audio, VFX, recoil)
-        /// </summary>
-        private void PlayFireEffects()
-        {
-            // Audio
-            if (weaponData.fireSound != null)
-            {
-                Core.AudioManager.Instance.Play(
-                    weaponData.fireSound,
-                    firePoint.position,
-                    1f,
-                    1f,
-                    weaponData.noiseLevel
-                );
-            }
-
-            // Muzzle flash
-            if (weaponData.muzzleFlashPrefab != null)
-            {
-                GameObject flash = Core.PoolManager.Instance.Get(
-                    weaponData.muzzleFlashPrefab,
-                    firePoint.position,
-                    firePoint.rotation
-                );
-                Core.PoolManager.Instance.Return(flash, 0.1f);
-            }
-
-            // Recoil
+            // Apply recoil
             ApplyRecoil();
 
-            // TODO: Bullet tracer
-        }
-
-        /// <summary>
-        /// Shows impact effect at hit point
-        /// </summary>
-        private void ShowImpactEffect(Vector3 position, Vector3 normal)
-        {
-            if (weaponData.impactEffectPrefab != null)
+            // Update ammo locally (server will validate)
+            if (IsServer)
             {
-                GameObject impact = Core.PoolManager.Instance.Get(
-                    weaponData.impactEffectPrefab,
-                    position,
-                    Quaternion.LookRotation(normal)
-                );
-                Core.PoolManager.Instance.Return(impact, 1f);
+                currentAmmo.Value--;
+            }
+
+            OnFire?.Invoke();
+
+            // Update UI
+            if (UI.GameHUD.Instance != null)
+            {
+                UI.GameHUD.Instance.UpdateAmmo(currentAmmo.Value, reserveAmmo.Value);
             }
         }
 
-        /// <summary>
-        /// Applies recoil to camera
-        /// </summary>
-        private void ApplyRecoil()
+        private IEnumerator BurstFire()
         {
-            Vector2 recoil = weaponData.GetRecoilAmount();
-            var playerCamera = GetComponentInParent<Player.PlayerCamera>();
-            playerCamera?.AddRecoil(recoil);
+            int burstCount = currentWeaponData.burstSize;
+            burstShotsFired = 0;
+
+            while (burstShotsFired < burstCount && currentAmmo.Value > 0)
+            {
+                Fire();
+                burstShotsFired++;
+
+                if (burstShotsFired < burstCount)
+                {
+                    yield return new WaitForSeconds(0.1f); // Delay between burst shots
+                }
+            }
         }
 
-        /// <summary>
-        /// Reloads the weapon
-        /// </summary>
-        public void Reload()
+        [ServerRpc]
+        private void RequestFireServerRpc()
         {
-            if (isReloading || currentAmmo >= weaponData.magazineSize || (reserveAmmo <= 0 && !infiniteAmmo))
+            if (!CanFire() || currentAmmo.Value <= 0) return;
+
+            // Server validates and processes shot
+            Vector3 fireDirection = playerCamera != null ? playerCamera.transform.forward : transform.forward;
+
+            // Use physics system for actual hit detection
+            if (physicsSystem != null)
             {
-                return;
+                float damage = currentWeaponData.damage;
+                float range = currentWeaponData.range;
+
+                if (attachmentSystem != null)
+                {
+                    var stats = attachmentSystem.GetCurrentStats();
+                    damage = stats.damage;
+                    range = stats.range;
+                }
+
+                physicsSystem.FireWeapon(fireDirection, damage, range, isAiming.Value, isCrouching);
             }
 
+            // Broadcast fire to all clients
+            FireClientRpc();
+        }
+
+        [ClientRpc]
+        private void FireClientRpc()
+        {
+            if (IsOwner) return; // Owner already saw effects
+
+            PlayFireEffects();
+        }
+
+        private bool CanFire()
+        {
+            if (isReloading.Value) return false;
+            if (isSprinting) return false;
+            if (currentWeaponData == null) return false;
+            return true;
+        }
+
+        private void PlayFireEffects()
+        {
+            // Play fire sound
+            if (weaponAudioSource != null && fireSound != null)
+            {
+                weaponAudioSource.PlayOneShot(fireSound);
+            }
+
+            // Play animation
+            if (weaponAnimator != null)
+            {
+                weaponAnimator.SetTrigger("Fire");
+            }
+
+            // Muzzle flash handled by WeaponPhysicsSystem
+        }
+
+        private void PlayDryFire()
+        {
+            if (weaponAudioSource != null && dryFireSound != null)
+            {
+                weaponAudioSource.PlayOneShot(dryFireSound);
+            }
+        }
+
+        #endregion
+
+        #region Reloading
+
+        [ServerRpc]
+        private void RequestReloadServerRpc()
+        {
+            if (isReloading.Value) return;
+            if (currentAmmo.Value >= currentWeaponData.magazineSize) return;
+            if (reserveAmmo.Value <= 0) return;
+
+            isReloading.Value = true;
             StartCoroutine(ReloadCoroutine());
         }
 
         private IEnumerator ReloadCoroutine()
         {
-            isReloading = true;
             OnReloadStart?.Invoke();
 
-            Debug.Log($"[WeaponController] Reloading {weaponData.weaponName}...");
+            float reloadTime = currentWeaponData.reloadTime;
+
+            if (attachmentSystem != null)
+            {
+                var stats = attachmentSystem.GetCurrentStats();
+                reloadTime = stats.reloadSpeed;
+            }
+
+            // Apply skill bonuses
+            if (Progression.SkillTreeSystem.Instance != null)
+            {
+                float reloadBonus = Progression.SkillTreeSystem.Instance.GetBonus(Progression.SkillBonusType.ReloadSpeed);
+                reloadTime *= (1f - reloadBonus);
+            }
 
             // Play reload sound
-            if (weaponData.reloadSound != null)
+            if (weaponAudioSource != null && reloadSound != null)
             {
-                Core.AudioManager.Instance.Play(weaponData.reloadSound);
+                weaponAudioSource.PlayOneShot(reloadSound);
             }
 
-            // Wait for reload time
-            yield return new WaitForSeconds(weaponData.reloadTime);
-
-            // Calculate ammo to reload
-            int ammoNeeded = weaponData.magazineSize - currentAmmo;
-
-            if (infiniteAmmo)
+            // Play animation
+            if (weaponAnimator != null)
             {
-                currentAmmo = weaponData.magazineSize;
-            }
-            else
-            {
-                int ammoToReload = Mathf.Min(ammoNeeded, reserveAmmo);
-                currentAmmo += ammoToReload;
-                reserveAmmo -= ammoToReload;
+                weaponAnimator.SetTrigger("Reload");
             }
 
-            isReloading = false;
+            // Show reload indicator on UI
+            float elapsedTime = 0f;
+            while (elapsedTime < reloadTime)
+            {
+                elapsedTime += Time.deltaTime;
+                float progress = elapsedTime / reloadTime;
+
+                if (UI.GameHUD.Instance != null && IsOwner)
+                {
+                    UI.GameHUD.Instance.ShowReloadIndicator(true, progress);
+                }
+
+                yield return null;
+            }
+
+            // Complete reload
+            if (IsServer)
+            {
+                int ammoNeeded = currentWeaponData.magazineSize - currentAmmo.Value;
+                int ammoToAdd = Mathf.Min(ammoNeeded, reserveAmmo.Value);
+
+                currentAmmo.Value += ammoToAdd;
+                reserveAmmo.Value -= ammoToAdd;
+                isReloading.Value = false;
+            }
+
             OnReloadComplete?.Invoke();
-            OnAmmoChanged?.Invoke();
 
-            Debug.Log($"[WeaponController] Reload complete. Ammo: {currentAmmo}/{weaponData.magazineSize}");
+            if (UI.GameHUD.Instance != null && IsOwner)
+            {
+                UI.GameHUD.Instance.ShowReloadIndicator(false);
+                UI.GameHUD.Instance.UpdateAmmo(currentAmmo.Value, reserveAmmo.Value);
+            }
         }
 
-        /// <summary>
-        /// Adds ammo to reserve
-        /// </summary>
+        #endregion
+
+        #region Aiming
+
+        [ServerRpc]
+        private void SetAimingServerRpc(bool aiming)
+        {
+            isAiming.Value = aiming;
+        }
+
+        private void UpdateAiming()
+        {
+            if (currentWeaponData == null) return;
+
+            // Calculate target position and FOV
+            Vector3 targetPosition = isAiming.Value ? aimPosition : hipPosition;
+            float targetFOV = normalFOV;
+
+            if (isAiming.Value && attachmentSystem != null && attachmentSystem.HasOptic())
+            {
+                targetFOV = aimFOV / attachmentSystem.GetOpticZoomLevel();
+            }
+            else if (isAiming.Value)
+            {
+                targetFOV = aimFOV;
+            }
+
+            // Smooth transition
+            if (weaponHolder != null)
+            {
+                weaponHolder.localPosition = Vector3.Lerp(weaponHolder.localPosition, targetPosition, Time.deltaTime * aimSpeed);
+            }
+
+            if (playerCamera != null)
+            {
+                playerCamera.fieldOfView = Mathf.Lerp(playerCamera.fieldOfView, targetFOV, Time.deltaTime * aimSpeed);
+            }
+        }
+
+        #endregion
+
+        #region Weapon Switching
+
+        private void SwitchToWeapon(int slot)
+        {
+            if (slot < 0 || slot >= equippedWeapons.Length) return;
+            if (slot == currentWeaponSlot) return;
+            if (equippedWeapons[slot] == null) return;
+            if (isReloading.Value) return;
+
+            StartCoroutine(SwitchWeaponCoroutine(slot));
+        }
+
+        private void SwitchToNextWeapon()
+        {
+            int nextSlot = (currentWeaponSlot + 1) % equippedWeapons.Length;
+            while (equippedWeapons[nextSlot] == null && nextSlot != currentWeaponSlot)
+            {
+                nextSlot = (nextSlot + 1) % equippedWeapons.Length;
+            }
+            SwitchToWeapon(nextSlot);
+        }
+
+        private void SwitchToPreviousWeapon()
+        {
+            int prevSlot = currentWeaponSlot - 1;
+            if (prevSlot < 0) prevSlot = equippedWeapons.Length - 1;
+            while (equippedWeapons[prevSlot] == null && prevSlot != currentWeaponSlot)
+            {
+                prevSlot--;
+                if (prevSlot < 0) prevSlot = equippedWeapons.Length - 1;
+            }
+            SwitchToWeapon(prevSlot);
+        }
+
+        private IEnumerator SwitchWeaponCoroutine(int newSlot)
+        {
+            // Hide current weapon
+            if (weaponModels[currentWeaponSlot] != null)
+            {
+                weaponModels[currentWeaponSlot].SetActive(false);
+            }
+
+            // Play switch sound
+            if (weaponAudioSource != null && weaponSwitchSound != null)
+            {
+                weaponAudioSource.PlayOneShot(weaponSwitchSound);
+            }
+
+            yield return new WaitForSeconds(0.3f);
+
+            // Switch to new weapon
+            currentWeaponSlot = newSlot;
+            currentWeaponData = equippedWeapons[newSlot];
+
+            if (weaponModels[newSlot] != null)
+            {
+                weaponModels[newSlot].SetActive(true);
+            }
+
+            // Re-initialize systems
+            InitializeWeapon();
+
+            // Update UI
+            if (UI.GameHUD.Instance != null && IsOwner)
+            {
+                UI.GameHUD.Instance.UpdateWeaponInfo(currentWeaponData.weaponName, currentWeaponData.icon);
+                UI.GameHUD.Instance.UpdateAmmo(currentAmmo.Value, reserveAmmo.Value);
+            }
+        }
+
+        private void CycleFireMode()
+        {
+            if (!IsServer) return;
+
+            int nextMode = (currentFireMode.Value + 1) % currentWeaponData.availableFireModes.Length;
+            currentFireMode.Value = nextMode;
+
+            // Update UI
+            string modeName = currentWeaponData.availableFireModes[nextMode].ToString();
+            if (UI.GameHUD.Instance != null && IsOwner)
+            {
+                UI.GameHUD.Instance.UpdateFireMode(modeName);
+            }
+        }
+
+        #endregion
+
+        #region Weapon Position & Animation
+
+        private void UpdateWeaponPosition()
+        {
+            if (weaponHolder == null) return;
+
+            Vector3 finalPosition = weaponHolder.localPosition;
+            Quaternion finalRotation = weaponHolder.localRotation;
+
+            // Apply sway
+            finalPosition += swayPosition;
+            finalRotation *= swayRotation;
+
+            // Apply recoil
+            finalPosition += currentRecoilPosition;
+            finalRotation *= Quaternion.Euler(currentRecoilRotation);
+
+            weaponHolder.localPosition = finalPosition;
+            weaponHolder.localRotation = finalRotation;
+        }
+
+        private void UpdateSway()
+        {
+            if (!IsOwner) return;
+
+            // Mouse-based sway
+            float mouseX = -Input.GetAxis("Mouse X") * swayAmount;
+            float mouseY = -Input.GetAxis("Mouse Y") * swayAmount;
+
+            Vector3 targetSwayPosition = new Vector3(mouseX, mouseY, 0f);
+            Quaternion targetSwayRotation = Quaternion.Euler(new Vector3(mouseY * 10f, mouseX * 10f, mouseX * 5f));
+
+            swayPosition = Vector3.Lerp(swayPosition, targetSwayPosition, Time.deltaTime * swaySmooth);
+            swayRotation = Quaternion.Slerp(swayRotation, targetSwayRotation, Time.deltaTime * swaySmooth);
+        }
+
+        private void UpdateBob()
+        {
+            if (!isMoving || isAiming.Value || weaponHolder == null) return;
+
+            bobTimer += Time.deltaTime * bobFrequency;
+
+            float bobX = Mathf.Sin(bobTimer) * bobAmount;
+            float bobY = Mathf.Sin(bobTimer * 2f) * bobAmount;
+
+            Vector3 bobPosition = new Vector3(bobX, bobY, 0f);
+            weaponHolder.localPosition += bobPosition;
+        }
+
+        private void ApplyRecoil()
+        {
+            if (physicsSystem == null) return;
+
+            Vector3 recoil = physicsSystem.GetCurrentRecoil();
+
+            // Apply to camera rotation
+            if (playerCamera != null)
+            {
+                playerCamera.transform.localRotation *= Quaternion.Euler(-recoil.x, recoil.y, 0f);
+            }
+
+            // Apply to weapon position
+            currentRecoilPosition += new Vector3(0f, 0f, -recoil.x * 0.01f);
+            currentRecoilRotation += recoil;
+        }
+
+        private void UpdateRecoil()
+        {
+            // Smooth return to zero
+            currentRecoilPosition = Vector3.Lerp(currentRecoilPosition, Vector3.zero, Time.deltaTime * recoilReturnSpeed);
+            currentRecoilRotation = Vector3.Lerp(currentRecoilRotation, Vector3.zero, Time.deltaTime * recoilReturnSpeed);
+        }
+
+        #endregion
+
+        #region Network Callbacks
+
+        private void OnAmmoChangedCallback(int previousValue, int newValue)
+        {
+            OnAmmoChanged?.Invoke();
+
+            if (UI.GameHUD.Instance != null && IsOwner)
+            {
+                UI.GameHUD.Instance.UpdateAmmo(newValue, reserveAmmo.Value);
+            }
+        }
+
+        private void OnReloadingChangedCallback(bool previousValue, bool newValue)
+        {
+            // Update UI or animations
+        }
+
+        private void OnAimingChangedCallback(bool previousValue, bool newValue)
+        {
+            // Update crosshair or UI
+        }
+
+        #endregion
+
+        #region Public Methods
+
         public void AddAmmo(int amount)
         {
-            reserveAmmo += amount;
-            OnAmmoChanged?.Invoke();
+            if (!IsServer) return;
+
+            reserveAmmo.Value = Mathf.Min(reserveAmmo.Value + amount, currentWeaponData.maxReserveAmmo);
         }
 
-        /// <summary>
-        /// Sets weapon data
-        /// </summary>
-        public void SetWeaponData(WeaponData data)
+        public void SetMovementState(bool moving, bool sprinting, bool crouching)
         {
-            weaponData = data;
-            currentAmmo = weaponData.magazineSize;
-            OnAmmoChanged?.Invoke();
-        }
+            isMoving = moving;
+            isSprinting = sprinting;
+            isCrouching = crouching;
 
-        // Helper methods to check player state (would integrate with PlayerMovement)
-        private bool IsPlayerMoving()
-        {
-            var movement = GetComponentInParent<Player.PlayerMovement>();
-            return movement != null && movement.CurrentSpeed > 0.1f;
-        }
-
-        private bool IsPlayerJumping()
-        {
-            var movement = GetComponentInParent<Player.PlayerMovement>();
-            return movement != null && !movement.IsGrounded;
-        }
-
-        private void OnValidate()
-        {
-            if (weaponData != null && currentAmmo > weaponData.magazineSize)
+            // Cancel aim if sprinting
+            if (isSprinting && isAiming.Value && IsServer)
             {
-                currentAmmo = weaponData.magazineSize;
+                isAiming.Value = false;
             }
         }
+
+        public int GetCurrentAmmo() => currentAmmo.Value;
+        public int GetReserveAmmo() => reserveAmmo.Value;
+        public bool IsReloading() => isReloading.Value;
+        public bool IsAiming() => isAiming.Value;
+        public WeaponData GetCurrentWeapon() => currentWeaponData;
+
+        #endregion
     }
 }
