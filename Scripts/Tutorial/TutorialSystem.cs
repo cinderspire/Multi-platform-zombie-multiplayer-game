@@ -1,828 +1,186 @@
-using UnityEngine;
-using Unity.Netcode;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System;
+using UnityEngine;
+using Unity.Netcode;
 
-namespace DeadFrontier.Tutorial
+namespace ZombieGame.Tutorial
 {
-    /// <summary>
-    /// Comprehensive tutorial and onboarding system.
-    /// Guides new players through game mechanics with interactive tutorials and hints.
-    /// Includes contextual help, progressive unlocking, and reward system.
-    /// </summary>
     public class TutorialSystem : NetworkBehaviour
     {
         public static TutorialSystem Instance { get; private set; }
 
-        [Header("Tutorial Settings")]
-        [SerializeField] private bool enableTutorials = true;
-        [SerializeField] private bool allowSkipping = true;
-        [SerializeField] private float hintDisplayTime = 5f;
+        private Dictionary<string, TutorialStep> tutorialSteps = new Dictionary<string, TutorialStep>();
+        private Dictionary<ulong, PlayerTutorialData> playerTutorialData = new Dictionary<ulong, PlayerTutorialData>();
 
-        [Header("New Player Settings")]
-        [SerializeField] private int maxPlayerLevelForTutorials = 10;
-        [SerializeField] private bool replayableTutorials = true;
-
-        // Tutorial definitions
-        private Dictionary<string, TutorialDefinition> tutorialDefinitions = new Dictionary<string, TutorialDefinition>();
-
-        // Player tutorial data
-        private Dictionary<ulong, PlayerTutorialData> playerData = new Dictionary<ulong, PlayerTutorialData>();
-
-        // Active tutorials
-        private Dictionary<ulong, ActiveTutorial> activeTutorials = new Dictionary<ulong, ActiveTutorial>();
-
-        // Hint system
-        private Dictionary<string, HintDefinition> hintDefinitions = new Dictionary<string, HintDefinition>();
-
-        // Events
-        public event Action<ulong, string> OnTutorialStarted;
-        public event Action<ulong, string> OnTutorialCompleted;
-        public event Action<ulong, string, int> OnTutorialStepCompleted;
-        public event Action<ulong, string> OnHintShown;
+        public event Action<ulong, string> OnTutorialStepCompleted;
 
         private void Awake()
         {
-            if (Instance == null)
-            {
-                Instance = this;
-                InitializeTutorials();
-                InitializeHints();
-            }
-            else
-            {
-                Destroy(gameObject);
-            }
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
+            Instance = this;
         }
 
-        #region Initialization
-
-        private void InitializeTutorials()
+        public override void OnNetworkSpawn()
         {
-            // Basic Movement Tutorial
-            RegisterTutorial(new TutorialDefinition
-            {
-                tutorialId = "tutorial_movement",
-                tutorialName = "Basic Movement",
-                description = "Learn how to move and navigate",
-                category = TutorialCategory.Basic,
-                isRequired = true,
-                steps = new List<TutorialStep>
-                {
-                    new TutorialStep
-                    {
-                        stepId = "move_forward",
-                        instruction = "Use WASD keys to move forward",
-                        requirement = TutorialRequirement.Movement,
-                        targetValue = 10f // Move 10 units
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "sprint",
-                        instruction = "Hold Shift to sprint",
-                        requirement = TutorialRequirement.Sprint,
-                        targetValue = 5f // Sprint for 5 seconds
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "jump",
-                        instruction = "Press Space to jump",
-                        requirement = TutorialRequirement.Jump,
-                        targetValue = 3 // Jump 3 times
-                    }
-                },
-                rewards = new TutorialReward { xp = 100, softCurrency = 200 }
-            });
-
-            // Combat Tutorial
-            RegisterTutorial(new TutorialDefinition
-            {
-                tutorialId = "tutorial_combat",
-                tutorialName = "Combat Basics",
-                description = "Learn how to fight zombies",
-                category = TutorialCategory.Combat,
-                isRequired = true,
-                prerequisites = new List<string> { "tutorial_movement" },
-                steps = new List<TutorialStep>
-                {
-                    new TutorialStep
-                    {
-                        stepId = "equip_weapon",
-                        instruction = "Press 1 to equip your primary weapon",
-                        requirement = TutorialRequirement.EquipWeapon,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "aim",
-                        instruction = "Right-click to aim down sights",
-                        requirement = TutorialRequirement.Aim,
-                        targetValue = 2f // Aim for 2 seconds
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "shoot",
-                        instruction = "Left-click to shoot. Kill 3 zombies",
-                        requirement = TutorialRequirement.KillEnemies,
-                        targetValue = 3
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "reload",
-                        instruction = "Press R to reload your weapon",
-                        requirement = TutorialRequirement.Reload,
-                        targetValue = 1
-                    }
-                },
-                rewards = new TutorialReward { xp = 200, softCurrency = 500, items = new List<string> { "weapon_pistol" } }
-            });
-
-            // Inventory Tutorial
-            RegisterTutorial(new TutorialDefinition
-            {
-                tutorialId = "tutorial_inventory",
-                tutorialName = "Inventory Management",
-                description = "Learn how to manage your inventory",
-                category = TutorialCategory.Systems,
-                isRequired = true,
-                steps = new List<TutorialStep>
-                {
-                    new TutorialStep
-                    {
-                        stepId = "open_inventory",
-                        instruction = "Press I to open your inventory",
-                        requirement = TutorialRequirement.OpenInventory,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "use_item",
-                        instruction = "Click on a healing item to use it",
-                        requirement = TutorialRequirement.UseItem,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "drop_item",
-                        instruction = "Right-click an item and select 'Drop'",
-                        requirement = TutorialRequirement.DropItem,
-                        targetValue = 1
-                    }
-                },
-                rewards = new TutorialReward { xp = 150, softCurrency = 300 }
-            });
-
-            // Extraction Tutorial
-            RegisterTutorial(new TutorialDefinition
-            {
-                tutorialId = "tutorial_extraction",
-                tutorialName = "Extraction Points",
-                description = "Learn how to extract safely",
-                category = TutorialCategory.Gameplay,
-                isRequired = true,
-                prerequisites = new List<string> { "tutorial_combat" },
-                steps = new List<TutorialStep>
-                {
-                    new TutorialStep
-                    {
-                        stepId = "find_extraction",
-                        instruction = "Find an extraction point marked on your map",
-                        requirement = TutorialRequirement.ReachLocation,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "call_extraction",
-                        instruction = "Interact with the extraction point",
-                        requirement = TutorialRequirement.Interact,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "defend",
-                        instruction = "Defend yourself while waiting for extraction",
-                        requirement = TutorialRequirement.SurviveTime,
-                        targetValue = 30f // 30 seconds
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "extract",
-                        instruction = "Board the extraction vehicle",
-                        requirement = TutorialRequirement.Extract,
-                        targetValue = 1
-                    }
-                },
-                rewards = new TutorialReward { xp = 500, softCurrency = 1000, items = new List<string> { "cosmetic_survivor_badge" } }
-            });
-
-            // Crafting Tutorial
-            RegisterTutorial(new TutorialDefinition
-            {
-                tutorialId = "tutorial_crafting",
-                tutorialName = "Crafting System",
-                description = "Learn how to craft items",
-                category = TutorialCategory.Systems,
-                isRequired = false,
-                steps = new List<TutorialStep>
-                {
-                    new TutorialStep
-                    {
-                        stepId = "open_crafting",
-                        instruction = "Open the crafting menu",
-                        requirement = TutorialRequirement.OpenCrafting,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "craft_item",
-                        instruction = "Craft a health pack",
-                        requirement = TutorialRequirement.CraftItem,
-                        targetValue = 1
-                    }
-                },
-                rewards = new TutorialReward { xp = 200, softCurrency = 400 }
-            });
-
-            // Trading Tutorial
-            RegisterTutorial(new TutorialDefinition
-            {
-                tutorialId = "tutorial_trading",
-                tutorialName = "Player Trading",
-                description = "Learn how to trade with other players",
-                category = TutorialCategory.Social,
-                isRequired = false,
-                steps = new List<TutorialStep>
-                {
-                    new TutorialStep
-                    {
-                        stepId = "open_market",
-                        instruction = "Open the marketplace",
-                        requirement = TutorialRequirement.OpenMarket,
-                        targetValue = 1
-                    },
-                    new TutorialStep
-                    {
-                        stepId = "buy_item",
-                        instruction = "Purchase an item from the market",
-                        requirement = TutorialRequirement.BuyItem,
-                        targetValue = 1
-                    }
-                },
-                rewards = new TutorialReward { xp = 150, softCurrency = 300 }
-            });
-
-            Debug.Log($"[TutorialSystem] Initialized {tutorialDefinitions.Count} tutorials");
+            base.OnNetworkSpawn();
+            if (IsServer) InitializeTutorial();
         }
 
-        private void InitializeHints()
+        private void InitializeTutorial()
         {
-            RegisterHint(new HintDefinition
-            {
-                hintId = "hint_low_health",
-                message = "Your health is low! Use a healing item or find medical supplies.",
-                trigger = HintTrigger.LowHealth,
-                priority = 5
-            });
+            // BASIC TUTORIAL CHAIN
+            tutorialSteps["welcome"] = new TutorialStep { stepId = "welcome", stepName = "Welcome", description = "Welcome to the apocalypse", category = TutorialCategory.Basics, completionType = CompletionType.Manual, rewards = new TutorialRewards { xp = 100, currency = 50 } };
+            tutorialSteps["movement"] = new TutorialStep { stepId = "movement", stepName = "Movement", description = "Learn to move around", category = TutorialCategory.Basics, completionType = CompletionType.Distance, requiredAmount = 100, prerequisites = new List<string> { "welcome" }, rewards = new TutorialRewards { xp = 100, currency = 50 } };
+            tutorialSteps["combat"] = new TutorialStep { stepId = "combat", stepName = "Combat Basics", description = "Kill your first zombie", category = TutorialCategory.Combat, completionType = CompletionType.Kill, requiredAmount = 1, prerequisites = new List<string> { "movement" }, rewards = new TutorialRewards { xp = 200, currency = 100 } };
+            tutorialSteps["inventory"] = new TutorialStep { stepId = "inventory", stepName = "Inventory", description = "Open your inventory", category = TutorialCategory.Systems, completionType = CompletionType.Manual, prerequisites = new List<string> { "combat" }, rewards = new TutorialRewards { xp = 100, currency = 50 } };
+            tutorialSteps["looting"] = new TutorialStep { stepId = "looting", stepName = "Looting", description = "Loot your first container", category = TutorialCategory.Systems, completionType = CompletionType.Loot, requiredAmount = 1, prerequisites = new List<string> { "inventory" }, rewards = new TutorialRewards { xp = 150, currency = 75, items = new List<string> { "consumable_medkit" } } };
 
-            RegisterHint(new HintDefinition
-            {
-                hintId = "hint_low_ammo",
-                message = "Running low on ammo! Search for ammunition or switch weapons.",
-                trigger = HintTrigger.LowAmmo,
-                priority = 4
-            });
+            // ADVANCED TUTORIAL
+            tutorialSteps["crafting"] = new TutorialStep { stepId = "crafting", stepName = "Crafting", description = "Craft your first item", category = TutorialCategory.Systems, completionType = CompletionType.Craft, requiredAmount = 1, prerequisites = new List<string> { "looting" }, rewards = new TutorialRewards { xp = 200, currency = 100 } };
+            tutorialSteps["base_building"] = new TutorialStep { stepId = "base_building", stepName = "Base Building", description = "Build a structure", category = TutorialCategory.Advanced, completionType = CompletionType.Build, requiredAmount = 1, prerequisites = new List<string> { "crafting" }, rewards = new TutorialRewards { xp = 300, currency = 150 } };
+            tutorialSteps["party"] = new TutorialStep { stepId = "party", stepName = "Party Up", description = "Join or create a party", category = TutorialCategory.Social, completionType = CompletionType.Manual, prerequisites = new List<string> { "combat" }, rewards = new TutorialRewards { xp = 200, currency = 100 } };
+            tutorialSteps["clan"] = new TutorialStep { stepId = "clan", stepName = "Clan System", description = "Join a clan", category = TutorialCategory.Social, completionType = CompletionType.Manual, prerequisites = new List<string> { "party" }, rewards = new TutorialRewards { xp = 300, currency = 200 } };
 
-            RegisterHint(new HintDefinition
-            {
-                hintId = "hint_enemy_nearby",
-                message = "Enemies detected nearby! Stay alert.",
-                trigger = HintTrigger.EnemyNearby,
-                priority = 3
-            });
+            // COMPLETION REWARDS
+            tutorialSteps["tutorial_complete"] = new TutorialStep { stepId = "tutorial_complete", stepName = "Tutorial Complete", description = "Complete all tutorial steps", category = TutorialCategory.Completion, completionType = CompletionType.Manual, rewards = new TutorialRewards { xp = 1000, currency = 500, hardCurrency = 50, items = new List<string> { "crate_rare", "weapon_rifle_m4" }, cosmetics = new List<string> { "title_graduate" } } };
 
-            RegisterHint(new HintDefinition
-            {
-                hintId = "hint_extraction_available",
-                message = "Extraction point available! Check your map.",
-                trigger = HintTrigger.ExtractionAvailable,
-                priority = 4
-            });
-
-            RegisterHint(new HintDefinition
-            {
-                hintId = "hint_inventory_full",
-                message = "Your inventory is full! Drop or use items to make space.",
-                trigger = HintTrigger.InventoryFull,
-                priority = 3
-            });
-
-            Debug.Log($"[TutorialSystem] Initialized {hintDefinitions.Count} hints");
+            Debug.Log($"Initialized {tutorialSteps.Count} tutorial steps");
         }
 
-        private void RegisterTutorial(TutorialDefinition tutorial)
+        [ServerRpc(RequireOwnership = false)]
+        public void InitializePlayerTutorialServerRpc(ulong playerId, ServerRpcParams rpcParams = default)
         {
-            tutorialDefinitions[tutorial.tutorialId] = tutorial;
-        }
+            if (playerTutorialData.ContainsKey(playerId)) return;
 
-        private void RegisterHint(HintDefinition hint)
-        {
-            hintDefinitions[hint.hintId] = hint;
-        }
-
-        #endregion
-
-        #region Player Data
-
-        public void InitializePlayerData(ulong playerId)
-        {
-            if (playerData.ContainsKey(playerId)) return;
-
-            playerData[playerId] = new PlayerTutorialData
+            playerTutorialData[playerId] = new PlayerTutorialData
             {
                 playerId = playerId,
-                completedTutorials = new List<string>(),
-                shownHints = new List<string>(),
-                tutorialProgress = new Dictionary<string, int>(),
-                skipTutorials = false
+                completedSteps = new List<string>(),
+                currentStep = "welcome",
+                tutorialEnabled = true,
+                progress = new Dictionary<string, int>()
             };
+        }
 
-            LoadPlayerData(playerId);
+        [ServerRpc(RequireOwnership = false)]
+        public void UpdateTutorialProgressServerRpc(ulong playerId, CompletionType type, int amount, ServerRpcParams rpcParams = default)
+        {
+            if (!playerTutorialData.TryGetValue(playerId, out var data)) return;
+            if (!data.tutorialEnabled) return;
 
-            // Auto-start required tutorials for new players
-            int playerLevel = Progression.ProgressionManager.Instance?.GetPlayerLevel(playerId) ?? 1;
+            var currentStepData = tutorialSteps.GetValueOrDefault(data.currentStep);
+            if (currentStepData == null) return;
 
-            if (playerLevel <= maxPlayerLevelForTutorials)
+            if (currentStepData.completionType == type)
             {
-                StartNextRequiredTutorial(playerId);
+                if (!data.progress.ContainsKey(data.currentStep))
+                {
+                    data.progress[data.currentStep] = 0;
+                }
+
+                data.progress[data.currentStep] += amount;
+
+                if (data.progress[data.currentStep] >= currentStepData.requiredAmount)
+                {
+                    CompleteTutorialStepServerRpc(playerId, data.currentStep);
+                }
             }
         }
 
-        #endregion
-
-        #region Tutorial Management
-
-        public bool CanStartTutorial(ulong playerId, string tutorialId)
+        [ServerRpc(RequireOwnership = false)]
+        public void CompleteTutorialStepServerRpc(ulong playerId, string stepId, ServerRpcParams rpcParams = default)
         {
-            if (!enableTutorials) return false;
+            if (!playerTutorialData.TryGetValue(playerId, out var data)) return;
+            if (data.completedSteps.Contains(stepId)) return;
 
-            if (!tutorialDefinitions.ContainsKey(tutorialId)) return false;
+            var step = tutorialSteps.GetValueOrDefault(stepId);
+            if (step == null) return;
 
-            if (!playerData.ContainsKey(playerId))
+            data.completedSteps.Add(stepId);
+
+            // Grant rewards
+            if (step.rewards != null)
             {
-                InitializePlayerData(playerId);
-            }
-
-            var data = playerData[playerId];
-            var tutorial = tutorialDefinitions[tutorialId];
-
-            // Check if already completed
-            if (!replayableTutorials && data.completedTutorials.Contains(tutorialId)) return false;
-
-            // Check if player opted out
-            if (data.skipTutorials) return false;
-
-            // Check prerequisites
-            if (tutorial.prerequisites != null)
-            {
-                foreach (var prereq in tutorial.prerequisites)
+                if (step.rewards.xp > 0)
+                    Progression.ProgressionSystem.Instance?.AddExperienceServerRpc(playerId, step.rewards.xp, "tutorial");
+                if (step.rewards.currency > 0)
+                    Economy.EconomyManager.Instance?.AddCurrencyServerRpc(playerId, Economy.CurrencyType.Soft, step.rewards.currency);
+                if (step.rewards.hardCurrency > 0)
+                    Economy.EconomyManager.Instance?.AddCurrencyServerRpc(playerId, Economy.CurrencyType.Hard, step.rewards.hardCurrency);
+                
+                foreach (var itemId in step.rewards.items)
                 {
-                    if (!data.completedTutorials.Contains(prereq)) return false;
+                    Inventory.InventorySystem.Instance?.AddItemServerRpc(playerId, itemId, 1, Inventory.ContainerType.Backpack);
                 }
             }
 
-            // Check if already active
-            if (activeTutorials.ContainsKey(playerId)) return false;
+            // Find next step
+            string nextStep = FindNextTutorialStep(data);
+            data.currentStep = nextStep;
 
-            return true;
+            OnTutorialStepCompleted?.Invoke(playerId, stepId);
+            NotifyTutorialStepCompletedClientRpc(playerId, stepId, nextStep);
+
+            Debug.Log($"Player {playerId} completed tutorial step: {step.stepName}");
         }
 
-        public bool StartTutorial(ulong playerId, string tutorialId)
+        private string FindNextTutorialStep(PlayerTutorialData data)
         {
-            if (!CanStartTutorial(playerId, tutorialId))
+            foreach (var step in tutorialSteps.Values)
             {
-                Debug.LogWarning($"[TutorialSystem] Cannot start tutorial {tutorialId} for player {playerId}");
-                return false;
+                if (data.completedSteps.Contains(step.stepId)) continue;
+
+                bool hasPrereqs = step.prerequisites == null || step.prerequisites.All(p => data.completedSteps.Contains(p));
+                if (hasPrereqs)
+                {
+                    return step.stepId;
+                }
             }
 
-            var tutorial = tutorialDefinitions[tutorialId];
-
-            var activeTutorial = new ActiveTutorial
-            {
-                tutorialId = tutorialId,
-                playerId = playerId,
-                currentStep = 0,
-                startTime = DateTime.UtcNow,
-                stepProgress = new Dictionary<int, float>()
-            };
-
-            activeTutorials[playerId] = activeTutorial;
-
-            OnTutorialStarted?.Invoke(playerId, tutorialId);
-
-            Debug.Log($"[TutorialSystem] Player {playerId} started tutorial: {tutorial.tutorialName}");
-
-            // Notify client
-            StartTutorialClientRpc(playerId, tutorialId, tutorial.tutorialName, tutorial.steps[0].instruction);
-
-            return true;
+            return null; // Tutorial complete
         }
 
         [ClientRpc]
-        private void StartTutorialClientRpc(ulong playerId, string tutorialId, string tutorialName, string firstInstruction)
-        {
-            Debug.Log($"[TutorialSystem] TUTORIAL: {tutorialName}\n{firstInstruction}");
-        }
+        private void NotifyTutorialStepCompletedClientRpc(ulong playerId, string completedStep, string nextStep) { }
 
-        private void StartNextRequiredTutorial(ulong playerId)
-        {
-            var data = playerData[playerId];
-
-            // Find next required tutorial
-            var nextTutorial = tutorialDefinitions.Values
-                .Where(t => t.isRequired && !data.completedTutorials.Contains(t.tutorialId))
-                .OrderBy(t => t.tutorialId)
-                .FirstOrDefault();
-
-            if (nextTutorial != null && CanStartTutorial(playerId, nextTutorial.tutorialId))
-            {
-                StartTutorial(playerId, nextTutorial.tutorialId);
-            }
-        }
-
-        public void SkipTutorial(ulong playerId)
-        {
-            if (!allowSkipping) return;
-
-            if (!activeTutorials.ContainsKey(playerId)) return;
-
-            var activeTutorial = activeTutorials[playerId];
-            var tutorial = tutorialDefinitions[activeTutorial.tutorialId];
-
-            // Mark as completed without rewards
-            CompleteTutorial(playerId, false);
-
-            Debug.Log($"[TutorialSystem] Player {playerId} skipped tutorial {activeTutorial.tutorialId}");
-        }
-
-        public void SkipAllTutorials(ulong playerId)
-        {
-            if (!playerData.ContainsKey(playerId)) return;
-
-            playerData[playerId].skipTutorials = true;
-
-            SavePlayerData(playerId);
-
-            Debug.Log($"[TutorialSystem] Player {playerId} opted out of tutorials");
-        }
-
-        #endregion
-
-        #region Tutorial Progress
-
-        public void UpdateTutorialProgress(ulong playerId, TutorialRequirement requirement, float value)
-        {
-            if (!activeTutorials.ContainsKey(playerId)) return;
-
-            var activeTutorial = activeTutorials[playerId];
-            var tutorial = tutorialDefinitions[activeTutorial.tutorialId];
-
-            var currentStep = tutorial.steps[activeTutorial.currentStep];
-
-            if (currentStep.requirement != requirement) return;
-
-            // Update progress
-            if (!activeTutorial.stepProgress.ContainsKey(activeTutorial.currentStep))
-            {
-                activeTutorial.stepProgress[activeTutorial.currentStep] = 0f;
-            }
-
-            float newProgress = Mathf.Min(
-                activeTutorial.stepProgress[activeTutorial.currentStep] + value,
-                currentStep.targetValue
-            );
-
-            activeTutorial.stepProgress[activeTutorial.currentStep] = newProgress;
-
-            // Check step completion
-            if (newProgress >= currentStep.targetValue)
-            {
-                CompleteStep(playerId);
-            }
-        }
-
-        private void CompleteStep(ulong playerId)
-        {
-            var activeTutorial = activeTutorials[playerId];
-            var tutorial = tutorialDefinitions[activeTutorial.tutorialId];
-
-            int completedStep = activeTutorial.currentStep;
-
-            OnTutorialStepCompleted?.Invoke(playerId, activeTutorial.tutorialId, completedStep);
-
-            Debug.Log($"[TutorialSystem] Player {playerId} completed step {completedStep}");
-
-            // Move to next step
-            activeTutorial.currentStep++;
-
-            if (activeTutorial.currentStep >= tutorial.steps.Count)
-            {
-                // Tutorial complete
-                CompleteTutorial(playerId, true);
-            }
-            else
-            {
-                // Show next step
-                var nextStep = tutorial.steps[activeTutorial.currentStep];
-                ShowTutorialStepClientRpc(playerId, nextStep.instruction);
-            }
-        }
-
-        [ClientRpc]
-        private void ShowTutorialStepClientRpc(ulong playerId, string instruction)
-        {
-            Debug.Log($"[TutorialSystem] NEXT STEP: {instruction}");
-        }
-
-        private void CompleteTutorial(ulong playerId, bool awardRewards)
-        {
-            if (!activeTutorials.ContainsKey(playerId)) return;
-
-            var activeTutorial = activeTutorials[playerId];
-            var tutorial = tutorialDefinitions[activeTutorial.tutorialId];
-            var data = playerData[playerId];
-
-            // Mark as completed
-            if (!data.completedTutorials.Contains(activeTutorial.tutorialId))
-            {
-                data.completedTutorials.Add(activeTutorial.tutorialId);
-            }
-
-            // Award rewards
-            if (awardRewards)
-            {
-                AwardTutorialRewards(playerId, tutorial.rewards);
-            }
-
-            activeTutorials.Remove(playerId);
-
-            OnTutorialCompleted?.Invoke(playerId, activeTutorial.tutorialId);
-
-            SavePlayerData(playerId);
-
-            Debug.Log($"[TutorialSystem] Player {playerId} completed tutorial: {tutorial.tutorialName}");
-
-            // Notify client
-            CompleteTutorialClientRpc(playerId, tutorial.tutorialName);
-
-            // Start next required tutorial
-            StartNextRequiredTutorial(playerId);
-        }
-
-        [ClientRpc]
-        private void CompleteTutorialClientRpc(ulong playerId, string tutorialName)
-        {
-            Debug.Log($"[TutorialSystem] TUTORIAL COMPLETED: {tutorialName}");
-        }
-
-        #endregion
-
-        #region Rewards
-
-        private void AwardTutorialRewards(ulong playerId, TutorialReward rewards)
-        {
-            if (rewards.xp > 0)
-            {
-                Progression.ProgressionManager.Instance?.AddExperience(playerId, rewards.xp);
-            }
-
-            if (rewards.softCurrency > 0)
-            {
-                Economy.EconomyManager.Instance?.AddSoftCurrency(playerId, rewards.softCurrency);
-            }
-
-            if (rewards.hardCurrency > 0)
-            {
-                Economy.EconomyManager.Instance?.AddHardCurrency(playerId, rewards.hardCurrency);
-            }
-
-            foreach (var itemId in rewards.items)
-            {
-                Inventory.InventoryManager.Instance?.AddItem(playerId, itemId, 1);
-            }
-        }
-
-        #endregion
-
-        #region Hint System
-
-        public void ShowHint(ulong playerId, string hintId)
-        {
-            if (!hintDefinitions.ContainsKey(hintId)) return;
-
-            if (!playerData.ContainsKey(playerId))
-            {
-                InitializePlayerData(playerId);
-            }
-
-            var data = playerData[playerId];
-            var hint = hintDefinitions[hintId];
-
-            // Check if already shown recently
-            if (data.shownHints.Contains(hintId))
-            {
-                // Cooldown check (simplified - would use timestamp in real implementation)
-                return;
-            }
-
-            data.shownHints.Add(hintId);
-
-            OnHintShown?.Invoke(playerId, hintId);
-
-            Debug.Log($"[TutorialSystem] Showing hint to player {playerId}: {hint.message}");
-
-            // Notify client
-            ShowHintClientRpc(playerId, hint.message, hintDisplayTime);
-        }
-
-        [ClientRpc]
-        private void ShowHintClientRpc(ulong playerId, string message, float duration)
-        {
-            Debug.Log($"[TutorialSystem] HINT: {message}");
-        }
-
-        public void TriggerHint(ulong playerId, HintTrigger trigger)
-        {
-            var hint = hintDefinitions.Values.FirstOrDefault(h => h.trigger == trigger);
-
-            if (hint != null)
-            {
-                ShowHint(playerId, hint.hintId);
-            }
-        }
-
-        #endregion
-
-        #region Public Getters
-
-        public List<TutorialDefinition> GetAvailableTutorials(ulong playerId)
-        {
-            return tutorialDefinitions.Values
-                .Where(t => CanStartTutorial(playerId, t.tutorialId))
-                .ToList();
-        }
-
-        public List<TutorialDefinition> GetCompletedTutorials(ulong playerId)
-        {
-            if (!playerData.ContainsKey(playerId)) return new List<TutorialDefinition>();
-
-            return playerData[playerId].completedTutorials
-                .Select(id => tutorialDefinitions[id])
-                .ToList();
-        }
-
-        public bool IsTutorialActive(ulong playerId)
-        {
-            return activeTutorials.ContainsKey(playerId);
-        }
-
-        public ActiveTutorial GetActiveTutorial(ulong playerId)
-        {
-            return activeTutorials.ContainsKey(playerId) ? activeTutorials[playerId] : null;
-        }
-
-        #endregion
-
-        #region Data Persistence
-
-        private void SavePlayerData(ulong playerId)
-        {
-            if (!playerData.ContainsKey(playerId)) return;
-
-            var data = playerData[playerId];
-            string json = JsonUtility.ToJson(data);
-
-            SaveSystem.SaveManager.Instance?.SaveData($"tutorial_{playerId}", json);
-        }
-
-        public void LoadPlayerData(ulong playerId)
-        {
-            string json = SaveSystem.SaveManager.Instance?.LoadData($"tutorial_{playerId}");
-
-            if (!string.IsNullOrEmpty(json))
-            {
-                var data = JsonUtility.FromJson<PlayerTutorialData>(json);
-                playerData[playerId] = data;
-
-                Debug.Log($"[TutorialSystem] Loaded tutorial data for player {playerId}");
-            }
-        }
-
-        #endregion
-    }
-
-    #region Data Classes
-
-    [Serializable]
-    public class TutorialDefinition
-    {
-        public string tutorialId;
-        public string tutorialName;
-        public string description;
-        public TutorialCategory category;
-        public bool isRequired;
-        public List<string> prerequisites;
-        public List<TutorialStep> steps = new List<TutorialStep>();
-        public TutorialReward rewards;
+        public PlayerTutorialData GetPlayerTutorialData(ulong playerId) => playerTutorialData.GetValueOrDefault(playerId);
+        public TutorialStep GetTutorialStep(string stepId) => tutorialSteps.GetValueOrDefault(stepId);
     }
 
     [Serializable]
     public class TutorialStep
     {
         public string stepId;
-        public string instruction;
-        public TutorialRequirement requirement;
-        public float targetValue;
+        public string stepName;
+        public string description;
+        public TutorialCategory category;
+        public CompletionType completionType;
+        public int requiredAmount;
+        public List<string> prerequisites;
+        public TutorialRewards rewards;
     }
 
     [Serializable]
-    public class TutorialReward
+    public class TutorialRewards
     {
         public int xp;
-        public int softCurrency;
+        public int currency;
         public int hardCurrency;
         public List<string> items = new List<string>();
-    }
-
-    [Serializable]
-    public class ActiveTutorial
-    {
-        public string tutorialId;
-        public ulong playerId;
-        public int currentStep;
-        public DateTime startTime;
-        public Dictionary<int, float> stepProgress = new Dictionary<int, float>();
+        public List<string> cosmetics = new List<string>();
     }
 
     [Serializable]
     public class PlayerTutorialData
     {
         public ulong playerId;
-        public List<string> completedTutorials = new List<string>();
-        public List<string> shownHints = new List<string>();
-        public Dictionary<string, int> tutorialProgress = new Dictionary<string, int>();
-        public bool skipTutorials;
+        public List<string> completedSteps;
+        public string currentStep;
+        public bool tutorialEnabled;
+        public Dictionary<string, int> progress;
     }
 
-    [Serializable]
-    public class HintDefinition
-    {
-        public string hintId;
-        public string message;
-        public HintTrigger trigger;
-        public int priority;
-    }
-
-    public enum TutorialCategory
-    {
-        Basic,
-        Combat,
-        Gameplay,
-        Systems,
-        Social,
-        Advanced
-    }
-
-    public enum TutorialRequirement
-    {
-        Movement,
-        Sprint,
-        Jump,
-        EquipWeapon,
-        Aim,
-        KillEnemies,
-        Reload,
-        OpenInventory,
-        UseItem,
-        DropItem,
-        ReachLocation,
-        Interact,
-        SurviveTime,
-        Extract,
-        OpenCrafting,
-        CraftItem,
-        OpenMarket,
-        BuyItem
-    }
-
-    public enum HintTrigger
-    {
-        LowHealth,
-        LowAmmo,
-        EnemyNearby,
-        ExtractionAvailable,
-        InventoryFull
-    }
-
-    #endregion
+    public enum TutorialCategory { Basics, Combat, Systems, Advanced, Social, Completion }
+    public enum CompletionType { Manual, Kill, Loot, Craft, Build, Distance }
 }
