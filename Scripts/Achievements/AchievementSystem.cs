@@ -7,809 +7,648 @@ using Unity.Netcode;
 namespace ZombieGame.Achievements
 {
     /// <summary>
-    /// Comprehensive achievement and trophy system.
-    /// Tracks player accomplishments, awards rewards, and manages achievement progression.
+    /// Comprehensive achievement system with categories, tiers, hidden achievements,
+    /// achievement chains, tracking, rewards, and showcase features.
     /// </summary>
     public class AchievementSystem : NetworkBehaviour
     {
         public static AchievementSystem Instance { get; private set; }
 
         [Header("Achievement Configuration")]
-        [SerializeField] private int maxFeaturedAchievements = 3;
-        [SerializeField] private bool enableHiddenAchievements = true;
-        [SerializeField] private int achievementPointsPerTier = 10;
-        [SerializeField] private bool enablePlatformTrophies = true;
-
-        [Header("Rewards")]
-        [SerializeField] private int baseRewardCurrency = 100;
-        [SerializeField] private int tierMultiplier = 5;
-        [SerializeField] private bool grantCosmeticRewards = true;
-
-        [Header("Showcase")]
         [SerializeField] private int maxShowcaseSlots = 5;
-        [SerializeField] private bool enableAchievementRarity = true;
 
-        // Data structures
+        // Achievement data
         private Dictionary<string, Achievement> achievementDatabase = new Dictionary<string, Achievement>();
-        private Dictionary<ulong, PlayerAchievementData> playerAchievements = new Dictionary<ulong, PlayerAchievementData>();
-        private Dictionary<string, List<string>> achievementChains = new Dictionary<string, List<string>>();
-        private Dictionary<AchievementCategory, List<string>> categorizedAchievements = new Dictionary<AchievementCategory, List<string>>();
+        private Dictionary<ulong, PlayerAchievementData> playerAchievementData = new Dictionary<ulong, PlayerAchievementData>();
 
         // Events
         public event Action<ulong, string> OnAchievementUnlocked;
-        public event Action<ulong, string, float> OnAchievementProgress;
-        public event Action<ulong, int> OnAchievementPointsChanged;
-        public event Action<ulong, string> OnAchievementShowcased;
+        public event Action<ulong, string, int> OnAchievementProgress;
 
         private void Awake()
         {
-            if (Instance != null && Instance != this)
-            {
-                Destroy(gameObject);
-                return;
-            }
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
             Instance = this;
         }
 
         public override void OnNetworkSpawn()
         {
             base.OnNetworkSpawn();
-
             if (IsServer)
             {
                 InitializeAchievements();
-                InitializeAchievementChains();
-                InitializeCategories();
             }
         }
 
         private void InitializeAchievements()
         {
-            // Combat Achievements
-            RegisterAchievement(new Achievement
+            // ===== COMBAT ACHIEVEMENTS =====
+            
+            // Zombie Kills
+            achievementDatabase["combat_kills_100"] = new Achievement
             {
-                achievementId = "first_blood",
-                title = "First Blood",
-                description = "Get your first kill",
-                category = AchievementCategory.Combat,
-                tier = AchievementTier.Bronze,
-                isHidden = false,
-                requirementType = RequirementType.KillCount,
-                requiredProgress = 1,
-                rewardCurrency = 100,
-                rewardPoints = 10
-            });
-
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "slayer",
-                title = "Slayer",
+                achievementId = "combat_kills_100",
+                achievementName = "Zombie Hunter",
                 description = "Kill 100 zombies",
                 category = AchievementCategory.Combat,
-                tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.KillCount,
-                requiredProgress = 100,
-                rewardCurrency = 500,
-                rewardPoints = 25
-            });
+                tier = AchievementTier.Bronze,
+                objectiveType = AchievementObjectiveType.Kill,
+                targetId = "zombie_any",
+                requiredAmount = 100,
+                rewards = new AchievementRewards { xp = 500, softCurrency = 100, title = "Zombie Hunter" }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["combat_kills_1000"] = new Achievement
             {
-                achievementId = "genocide",
-                title = "Genocide",
-                description = "Kill 1000 zombies",
+                achievementId = "combat_kills_1000",
+                achievementName = "Zombie Slayer",
+                description = "Kill 1,000 zombies",
+                category = AchievementCategory.Combat,
+                tier = AchievementTier.Silver,
+                objectiveType = AchievementObjectiveType.Kill,
+                targetId = "zombie_any",
+                requiredAmount = 1000,
+                prerequisiteAchievements = new List<string> { "combat_kills_100" },
+                rewards = new AchievementRewards { xp = 2000, softCurrency = 500, title = "Zombie Slayer" }
+            };
+
+            achievementDatabase["combat_kills_10000"] = new Achievement
+            {
+                achievementId = "combat_kills_10000",
+                achievementName = "Zombie Annihilator",
+                description = "Kill 10,000 zombies",
                 category = AchievementCategory.Combat,
                 tier = AchievementTier.Gold,
-                isHidden = false,
-                requirementType = RequirementType.KillCount,
-                requiredProgress = 1000,
-                rewardCurrency = 2500,
-                rewardPoints = 50,
-                rewardCosmetic = "title_slayer"
-            });
+                objectiveType = AchievementObjectiveType.Kill,
+                targetId = "zombie_any",
+                requiredAmount = 10000,
+                prerequisiteAchievements = new List<string> { "combat_kills_1000" },
+                rewards = new AchievementRewards { xp = 10000, softCurrency = 5000, hardCurrency = 50, title = "Zombie Annihilator", cosmetic = "effect_blood_aura" }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["combat_kills_100000"] = new Achievement
             {
-                achievementId = "headhunter",
-                title = "Headhunter",
-                description = "Get 50 headshot kills",
+                achievementId = "combat_kills_100000",
+                achievementName = "Legend of the Apocalypse",
+                description = "Kill 100,000 zombies",
                 category = AchievementCategory.Combat,
-                tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.HeadshotKills,
-                requiredProgress = 50,
-                rewardCurrency = 750,
-                rewardPoints = 30
-            });
+                tier = AchievementTier.Platinum,
+                objectiveType = AchievementObjectiveType.Kill,
+                targetId = "zombie_any",
+                requiredAmount = 100000,
+                prerequisiteAchievements = new List<string> { "combat_kills_10000" },
+                rewards = new AchievementRewards { xp = 50000, softCurrency = 50000, hardCurrency = 500, title = "Legend of the Apocalypse", cosmetic = "skin_legendary_survivor" }
+            };
 
-            RegisterAchievement(new Achievement
+            // Headshots
+            achievementDatabase["combat_headshots_100"] = new Achievement
             {
-                achievementId = "sharpshooter",
-                title = "Sharpshooter",
+                achievementId = "combat_headshots_100",
+                achievementName = "Marksman",
                 description = "Get 100 headshot kills",
                 category = AchievementCategory.Combat,
-                tier = AchievementTier.Gold,
-                isHidden = false,
-                requirementType = RequirementType.HeadshotKills,
-                requiredProgress = 100,
-                rewardCurrency = 1500,
-                rewardPoints = 50
-            });
+                tier = AchievementTier.Bronze,
+                objectiveType = AchievementObjectiveType.HeadshotKill,
+                requiredAmount = 100,
+                rewards = new AchievementRewards { xp = 750, softCurrency = 200 }
+            };
 
-            // Survival Achievements
-            RegisterAchievement(new Achievement
+            achievementDatabase["combat_headshots_1000"] = new Achievement
             {
-                achievementId = "survivor",
-                title = "Survivor",
-                description = "Survive for 30 minutes in a single session",
+                achievementId = "combat_headshots_1000",
+                achievementName = "Sharpshooter",
+                description = "Get 1,000 headshot kills",
+                category = AchievementCategory.Combat,
+                tier = AchievementTier.Gold,
+                objectiveType = AchievementObjectiveType.HeadshotKill,
+                requiredAmount = 1000,
+                prerequisiteAchievements = new List<string> { "combat_headshots_100" },
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 2000, hardCurrency = 25, cosmetic = "charm_sniper_bullet" }
+            };
+
+            // Boss Kills
+            achievementDatabase["combat_boss_first"] = new Achievement
+            {
+                achievementId = "combat_boss_first",
+                achievementName = "Boss Hunter",
+                description = "Defeat your first world boss",
+                category = AchievementCategory.Combat,
+                tier = AchievementTier.Silver,
+                objectiveType = AchievementObjectiveType.Kill,
+                targetId = "boss_any",
+                requiredAmount = 1,
+                rewards = new AchievementRewards { xp = 1000, softCurrency = 500 }
+            };
+
+            achievementDatabase["combat_boss_all"] = new Achievement
+            {
+                achievementId = "combat_boss_all",
+                achievementName = "Boss Master",
+                description = "Defeat all unique world bosses",
+                category = AchievementCategory.Combat,
+                tier = AchievementTier.Platinum,
+                objectiveType = AchievementObjectiveType.KillUnique,
+                targetIds = new List<string> { "boss_tank", "boss_screamer", "boss_alpha", "boss_colossus", "boss_abomination" },
+                rewards = new AchievementRewards { xp = 25000, softCurrency = 10000, hardCurrency = 100, title = "Boss Master", cosmetic = "skin_boss_slayer" }
+            };
+
+            // ===== SURVIVAL ACHIEVEMENTS =====
+
+            achievementDatabase["survival_days_1"] = new Achievement
+            {
+                achievementId = "survival_days_1",
+                achievementName = "First Night",
+                description = "Survive your first night",
                 category = AchievementCategory.Survival,
                 tier = AchievementTier.Bronze,
-                isHidden = false,
-                requirementType = RequirementType.SurvivalTime,
-                requiredProgress = 1800,
-                rewardCurrency = 200,
-                rewardPoints = 15
-            });
+                objectiveType = AchievementObjectiveType.Survive,
+                requiredAmount = 1,
+                rewards = new AchievementRewards { xp = 100, softCurrency = 50 }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["survival_days_7"] = new Achievement
             {
-                achievementId = "lone_wolf",
-                title = "Lone Wolf",
-                description = "Survive for 1 hour solo",
+                achievementId = "survival_days_7",
+                achievementName = "Week Survivor",
+                description = "Survive 7 consecutive nights",
+                category = AchievementCategory.Survival,
+                tier = AchievementTier.Silver,
+                objectiveType = AchievementObjectiveType.Survive,
+                requiredAmount = 7,
+                rewards = new AchievementRewards { xp = 1000, softCurrency = 500 }
+            };
+
+            achievementDatabase["survival_days_30"] = new Achievement
+            {
+                achievementId = "survival_days_30",
+                achievementName = "Month Survivor",
+                description = "Survive 30 consecutive nights",
                 category = AchievementCategory.Survival,
                 tier = AchievementTier.Gold,
-                isHidden = false,
-                requirementType = RequirementType.SoloSurvivalTime,
-                requiredProgress = 3600,
-                rewardCurrency = 1000,
-                rewardPoints = 40
-            });
+                objectiveType = AchievementObjectiveType.Survive,
+                requiredAmount = 30,
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 5000, hardCurrency = 50, title = "Long-term Survivor" }
+            };
 
-            // Exploration Achievements
-            RegisterAchievement(new Achievement
+            achievementDatabase["survival_no_damage"] = new Achievement
             {
-                achievementId = "explorer",
-                title = "Explorer",
-                description = "Discover 10 locations",
-                category = AchievementCategory.Exploration,
-                tier = AchievementTier.Bronze,
-                isHidden = false,
-                requirementType = RequirementType.LocationsDiscovered,
-                requiredProgress = 10,
-                rewardCurrency = 300,
-                rewardPoints = 15
-            });
-
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "cartographer",
-                title = "Cartographer",
-                description = "Discover all locations",
-                category = AchievementCategory.Exploration,
-                tier = AchievementTier.Platinum,
-                isHidden = false,
-                requirementType = RequirementType.LocationsDiscovered,
-                requiredProgress = 50,
-                rewardCurrency = 5000,
-                rewardPoints = 100,
-                rewardCosmetic = "title_cartographer"
-            });
-
-            // Economy Achievements
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "entrepreneur",
-                title = "Entrepreneur",
-                description = "Earn 10,000 currency",
-                category = AchievementCategory.Economy,
-                tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.CurrencyEarned,
-                requiredProgress = 10000,
-                rewardCurrency = 500,
-                rewardPoints = 20
-            });
-
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "tycoon",
-                title = "Tycoon",
-                description = "Earn 100,000 currency",
-                category = AchievementCategory.Economy,
+                achievementId = "survival_no_damage",
+                achievementName = "Untouchable",
+                description = "Complete a mission without taking damage",
+                category = AchievementCategory.Survival,
                 tier = AchievementTier.Gold,
-                isHidden = false,
-                requirementType = RequirementType.CurrencyEarned,
-                requiredProgress = 100000,
-                rewardCurrency = 2000,
-                rewardPoints = 50
-            });
+                objectiveType = AchievementObjectiveType.NoDamage,
+                requiredAmount = 1,
+                rewards = new AchievementRewards { xp = 2000, softCurrency = 1000, hardCurrency = 25 }
+            };
 
-            // Crafting Achievements
-            RegisterAchievement(new Achievement
+            // ===== EXPLORATION ACHIEVEMENTS =====
+
+            achievementDatabase["exploration_distance_10k"] = new Achievement
             {
-                achievementId = "craftsman",
-                title = "Craftsman",
-                description = "Craft 50 items",
-                category = AchievementCategory.Crafting,
+                achievementId = "exploration_distance_10k",
+                achievementName = "Wanderer",
+                description = "Travel 10,000 meters",
+                category = AchievementCategory.Exploration,
+                tier = AchievementTier.Bronze,
+                objectiveType = AchievementObjectiveType.Distance,
+                requiredAmount = 10000,
+                rewards = new AchievementRewards { xp = 500, softCurrency = 200 }
+            };
+
+            achievementDatabase["exploration_distance_100k"] = new Achievement
+            {
+                achievementId = "exploration_distance_100k",
+                achievementName = "Explorer",
+                description = "Travel 100,000 meters",
+                category = AchievementCategory.Exploration,
                 tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.ItemsCrafted,
-                requiredProgress = 50,
-                rewardCurrency = 400,
-                rewardPoints = 20
-            });
+                objectiveType = AchievementObjectiveType.Distance,
+                requiredAmount = 100000,
+                rewards = new AchievementRewards { xp = 2000, softCurrency = 1000 }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["exploration_locations_all"] = new Achievement
             {
-                achievementId = "master_crafter",
-                title = "Master Crafter",
-                description = "Craft 500 items",
+                achievementId = "exploration_locations_all",
+                achievementName = "Cartographer",
+                description = "Discover all locations on the map",
+                category = AchievementCategory.Exploration,
+                tier = AchievementTier.Platinum,
+                objectiveType = AchievementObjectiveType.DiscoverLocations,
+                requiredAmount = 50,
+                rewards = new AchievementRewards { xp = 10000, softCurrency = 5000, hardCurrency = 100, title = "Master Explorer", cosmetic = "charm_compass" }
+            };
+
+            // ===== CRAFTING ACHIEVEMENTS =====
+
+            achievementDatabase["crafting_items_100"] = new Achievement
+            {
+                achievementId = "crafting_items_100",
+                achievementName = "Apprentice Crafter",
+                description = "Craft 100 items",
+                category = AchievementCategory.Crafting,
+                tier = AchievementTier.Bronze,
+                objectiveType = AchievementObjectiveType.Craft,
+                requiredAmount = 100,
+                rewards = new AchievementRewards { xp = 500, softCurrency = 200 }
+            };
+
+            achievementDatabase["crafting_items_1000"] = new Achievement
+            {
+                achievementId = "crafting_items_1000",
+                achievementName = "Master Crafter",
+                description = "Craft 1,000 items",
+                category = AchievementCategory.Crafting,
+                tier = AchievementTier.Gold,
+                objectiveType = AchievementObjectiveType.Craft,
+                requiredAmount = 1000,
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 2000, hardCurrency = 50, title = "Master Crafter" }
+            };
+
+            achievementDatabase["crafting_legendary"] = new Achievement
+            {
+                achievementId = "crafting_legendary",
+                achievementName = "Legendary Artisan",
+                description = "Craft a legendary quality item",
                 category = AchievementCategory.Crafting,
                 tier = AchievementTier.Platinum,
-                isHidden = false,
-                requirementType = RequirementType.ItemsCrafted,
-                requiredProgress = 500,
-                rewardCurrency = 3000,
-                rewardPoints = 75,
-                rewardCosmetic = "title_master_crafter"
-            });
+                objectiveType = AchievementObjectiveType.CraftQuality,
+                targetId = "legendary",
+                requiredAmount = 1,
+                rewards = new AchievementRewards { xp = 10000, softCurrency = 5000, hardCurrency = 100, cosmetic = "effect_crafting_aura" }
+            };
 
-            // Social Achievements
-            RegisterAchievement(new Achievement
+            // ===== SOCIAL ACHIEVEMENTS =====
+
+            achievementDatabase["social_party_missions_10"] = new Achievement
             {
-                achievementId = "friendly",
-                title = "Friendly",
-                description = "Add 10 friends",
+                achievementId = "social_party_missions_10",
+                achievementName = "Team Player",
+                description = "Complete 10 missions in a party",
                 category = AchievementCategory.Social,
                 tier = AchievementTier.Bronze,
-                isHidden = false,
-                requirementType = RequirementType.FriendsAdded,
-                requiredProgress = 10,
-                rewardCurrency = 200,
-                rewardPoints = 10
-            });
+                objectiveType = AchievementObjectiveType.PartyMission,
+                requiredAmount = 10,
+                rewards = new AchievementRewards { xp = 500, softCurrency = 200 }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["social_clan_create"] = new Achievement
             {
-                achievementId = "team_player",
-                title = "Team Player",
-                description = "Complete 25 missions in a party",
+                achievementId = "social_clan_create",
+                achievementName = "Clan Founder",
+                description = "Create a clan",
                 category = AchievementCategory.Social,
                 tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.PartyMissionsCompleted,
-                requiredProgress = 25,
-                rewardCurrency = 600,
-                rewardPoints = 25
-            });
+                objectiveType = AchievementObjectiveType.ClanCreate,
+                requiredAmount = 1,
+                rewards = new AchievementRewards { xp = 1000, softCurrency = 500 }
+            };
 
-            // Progression Achievements
-            RegisterAchievement(new Achievement
+            achievementDatabase["social_clan_max_level"] = new Achievement
             {
-                achievementId = "level_10",
-                title = "Apprentice",
-                description = "Reach level 10",
+                achievementId = "social_clan_max_level",
+                achievementName = "Clan Legend",
+                description = "Reach max clan level",
+                category = AchievementCategory.Social,
+                tier = AchievementTier.Platinum,
+                objectiveType = AchievementObjectiveType.ClanLevel,
+                requiredAmount = 20,
+                rewards = new AchievementRewards { xp = 20000, softCurrency = 10000, hardCurrency = 200, title = "Clan Legend" }
+            };
+
+            achievementDatabase["social_trades_100"] = new Achievement
+            {
+                achievementId = "social_trades_100",
+                achievementName = "Merchant",
+                description = "Complete 100 player trades",
+                category = AchievementCategory.Social,
+                tier = AchievementTier.Gold,
+                objectiveType = AchievementObjectiveType.Trade,
+                requiredAmount = 100,
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 2000, hardCurrency = 50, title = "Merchant" }
+            };
+
+            // ===== COLLECTION ACHIEVEMENTS =====
+
+            achievementDatabase["collection_weapons_10"] = new Achievement
+            {
+                achievementId = "collection_weapons_10",
+                achievementName = "Arms Collector",
+                description = "Collect 10 unique weapons",
+                category = AchievementCategory.Collection,
+                tier = AchievementTier.Silver,
+                objectiveType = AchievementObjectiveType.CollectUnique,
+                targetId = "weapon",
+                requiredAmount = 10,
+                rewards = new AchievementRewards { xp = 1000, softCurrency = 500 }
+            };
+
+            achievementDatabase["collection_weapons_all"] = new Achievement
+            {
+                achievementId = "collection_weapons_all",
+                achievementName = "Arsenal Master",
+                description = "Collect all weapons in the game",
+                category = AchievementCategory.Collection,
+                tier = AchievementTier.Platinum,
+                objectiveType = AchievementObjectiveType.CollectUnique,
+                targetId = "weapon",
+                requiredAmount = 50,
+                rewards = new AchievementRewards { xp = 25000, softCurrency = 20000, hardCurrency = 250, title = "Arsenal Master", cosmetic = "skin_weapon_collector" }
+            };
+
+            achievementDatabase["collection_cosmetics_25"] = new Achievement
+            {
+                achievementId = "collection_cosmetics_25",
+                achievementName = "Fashion Icon",
+                description = "Collect 25 cosmetic items",
+                category = AchievementCategory.Collection,
+                tier = AchievementTier.Gold,
+                objectiveType = AchievementObjectiveType.CollectUnique,
+                targetId = "cosmetic",
+                requiredAmount = 25,
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 2000, hardCurrency = 50, title = "Fashion Icon" }
+            };
+
+            // ===== PROGRESSION ACHIEVEMENTS =====
+
+            achievementDatabase["progression_level_25"] = new Achievement
+            {
+                achievementId = "progression_level_25",
+                achievementName = "Veteran",
+                description = "Reach level 25",
                 category = AchievementCategory.Progression,
-                tier = AchievementTier.Bronze,
-                isHidden = false,
-                requirementType = RequirementType.LevelReached,
-                requiredProgress = 10,
-                rewardCurrency = 250,
-                rewardPoints = 15
-            });
+                tier = AchievementTier.Silver,
+                objectiveType = AchievementObjectiveType.Level,
+                requiredAmount = 25,
+                rewards = new AchievementRewards { xp = 2000, softCurrency = 1000, title = "Veteran" }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["progression_level_50"] = new Achievement
             {
-                achievementId = "level_50",
-                title = "Veteran",
+                achievementId = "progression_level_50",
+                achievementName = "Elite",
                 description = "Reach level 50",
                 category = AchievementCategory.Progression,
                 tier = AchievementTier.Gold,
-                isHidden = false,
-                requirementType = RequirementType.LevelReached,
-                requiredProgress = 50,
-                rewardCurrency = 1500,
-                rewardPoints = 50
-            });
+                objectiveType = AchievementObjectiveType.Level,
+                requiredAmount = 50,
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 5000, hardCurrency = 50, title = "Elite Survivor" }
+            };
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["progression_level_100"] = new Achievement
             {
-                achievementId = "level_100",
-                title = "Legend",
-                description = "Reach level 100",
+                achievementId = "progression_level_100",
+                achievementName = "Maxed Out",
+                description = "Reach max level",
                 category = AchievementCategory.Progression,
                 tier = AchievementTier.Platinum,
-                isHidden = false,
-                requirementType = RequirementType.LevelReached,
-                requiredProgress = 100,
-                rewardCurrency = 5000,
-                rewardPoints = 100,
-                rewardCosmetic = "title_legend"
-            });
+                objectiveType = AchievementObjectiveType.Level,
+                requiredAmount = 100,
+                rewards = new AchievementRewards { xp = 0, softCurrency = 50000, hardCurrency = 500, title = "Living Legend", cosmetic = "effect_max_level_aura" }
+            };
 
-            // Hidden/Secret Achievements
-            RegisterAchievement(new Achievement
+            achievementDatabase["progression_prestige"] = new Achievement
             {
-                achievementId = "secret_room",
-                title = "???",
-                description = "???",
-                category = AchievementCategory.Secret,
-                tier = AchievementTier.Gold,
-                isHidden = true,
-                requirementType = RequirementType.SpecialCondition,
-                requiredProgress = 1,
-                rewardCurrency = 2000,
-                rewardPoints = 60,
-                revealedTitle = "Secret Room",
-                revealedDescription = "Find the secret room"
-            });
-
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "easter_egg",
-                title = "???",
-                description = "???",
-                category = AchievementCategory.Secret,
+                achievementId = "progression_prestige",
+                achievementName = "Prestige",
+                description = "Prestige for the first time",
+                category = AchievementCategory.Progression,
                 tier = AchievementTier.Platinum,
-                isHidden = true,
-                requirementType = RequirementType.SpecialCondition,
-                requiredProgress = 1,
-                rewardCurrency = 5000,
-                rewardPoints = 100,
-                revealedTitle = "Easter Egg Hunter",
-                revealedDescription = "Find the hidden easter egg"
-            });
+                objectiveType = AchievementObjectiveType.Prestige,
+                requiredAmount = 1,
+                rewards = new AchievementRewards { xp = 10000, softCurrency = 10000, hardCurrency = 100, title = "Prestige I" }
+            };
 
-            // Boss Achievements
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "boss_slayer",
-                title = "Boss Slayer",
-                description = "Defeat your first boss",
-                category = AchievementCategory.Bosses,
-                tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.BossesDefeated,
-                requiredProgress = 1,
-                rewardCurrency = 1000,
-                rewardPoints = 30
-            });
+            // ===== SPECIAL/HIDDEN ACHIEVEMENTS =====
 
-            RegisterAchievement(new Achievement
+            achievementDatabase["special_death_fall"] = new Achievement
             {
-                achievementId = "raid_champion",
-                title = "Raid Champion",
-                description = "Defeat 10 raid bosses",
-                category = AchievementCategory.Bosses,
+                achievementId = "special_death_fall",
+                achievementName = "Gravity Check",
+                description = "Die from fall damage",
+                category = AchievementCategory.Special,
+                tier = AchievementTier.Bronze,
+                objectiveType = AchievementObjectiveType.DeathType,
+                targetId = "fall",
+                requiredAmount = 1,
+                hidden = true,
+                rewards = new AchievementRewards { xp = 50, softCurrency = 10 }
+            };
+
+            achievementDatabase["special_death_explosion"] = new Achievement
+            {
+                achievementId = "special_death_explosion",
+                achievementName = "Explosive Personality",
+                description = "Kill yourself with explosives",
+                category = AchievementCategory.Special,
+                tier = AchievementTier.Bronze,
+                objectiveType = AchievementObjectiveType.DeathType,
+                targetId = "explosion_self",
+                requiredAmount = 1,
+                hidden = true,
+                rewards = new AchievementRewards { xp = 50, softCurrency = 10 }
+            };
+
+            achievementDatabase["special_melee_only"] = new Achievement
+            {
+                achievementId = "special_melee_only",
+                achievementName = "Melee Master",
+                description = "Complete a mission using only melee weapons",
+                category = AchievementCategory.Special,
                 tier = AchievementTier.Gold,
-                isHidden = false,
-                requirementType = RequirementType.RaidBossesDefeated,
-                requiredProgress = 10,
-                rewardCurrency = 3000,
-                rewardPoints = 75
-            });
+                objectiveType = AchievementObjectiveType.MissionConstraint,
+                targetId = "melee_only",
+                requiredAmount = 1,
+                hidden = true,
+                rewards = new AchievementRewards { xp = 5000, softCurrency = 2000, hardCurrency = 50, cosmetic = "charm_melee_master" }
+            };
 
-            // Collection Achievements
-            RegisterAchievement(new Achievement
+            achievementDatabase["special_no_death_100"] = new Achievement
             {
-                achievementId = "collector",
-                title = "Collector",
-                description = "Collect 100 unique items",
-                category = AchievementCategory.Collection,
-                tier = AchievementTier.Silver,
-                isHidden = false,
-                requirementType = RequirementType.UniqueItemsCollected,
-                requiredProgress = 100,
-                rewardCurrency = 800,
-                rewardPoints = 30
-            });
-
-            RegisterAchievement(new Achievement
-            {
-                achievementId = "completionist",
-                title = "Completionist",
-                description = "Collect all items in the game",
-                category = AchievementCategory.Collection,
+                achievementId = "special_no_death_100",
+                achievementName = "Immortal",
+                description = "Kill 100 zombies without dying",
+                category = AchievementCategory.Special,
                 tier = AchievementTier.Platinum,
-                isHidden = false,
-                requirementType = RequirementType.UniqueItemsCollected,
-                requiredProgress = 500,
-                rewardCurrency = 10000,
-                rewardPoints = 150,
-                rewardCosmetic = "title_completionist"
-            });
-        }
+                objectiveType = AchievementObjectiveType.KillStreak,
+                requiredAmount = 100,
+                hidden = true,
+                rewards = new AchievementRewards { xp = 10000, softCurrency = 5000, hardCurrency = 100, title = "Immortal", cosmetic = "effect_immortal_glow" }
+            };
 
-        private void RegisterAchievement(Achievement achievement)
-        {
-            achievementDatabase[achievement.achievementId] = achievement;
-        }
-
-        private void InitializeAchievementChains()
-        {
-            // Define achievement chains (prerequisites)
-            achievementChains["kill_chain"] = new List<string> { "first_blood", "slayer", "genocide" };
-            achievementChains["headshot_chain"] = new List<string> { "headhunter", "sharpshooter" };
-            achievementChains["level_chain"] = new List<string> { "level_10", "level_50", "level_100" };
-            achievementChains["economy_chain"] = new List<string> { "entrepreneur", "tycoon" };
-            achievementChains["crafting_chain"] = new List<string> { "craftsman", "master_crafter" };
-        }
-
-        private void InitializeCategories()
-        {
-            foreach (AchievementCategory category in Enum.GetValues(typeof(AchievementCategory)))
+            achievementDatabase["special_millionaire"] = new Achievement
             {
-                categorizedAchievements[category] = new List<string>();
-            }
+                achievementId = "special_millionaire",
+                achievementName = "Millionaire",
+                description = "Accumulate 1,000,000 soft currency",
+                category = AchievementCategory.Special,
+                tier = AchievementTier.Platinum,
+                objectiveType = AchievementObjectiveType.Currency,
+                requiredAmount = 1000000,
+                hidden = true,
+                rewards = new AchievementRewards { xp = 20000, hardCurrency = 200, title = "Apocalypse Millionaire" }
+            };
 
-            foreach (var achievement in achievementDatabase.Values)
-            {
-                categorizedAchievements[achievement.category].Add(achievement.achievementId);
-            }
+            Debug.Log($"Initialized {achievementDatabase.Count} achievements");
         }
 
-        #region Server RPCs
-
+        // Main achievement operations
         [ServerRpc(RequireOwnership = false)]
         public void InitializePlayerAchievementsServerRpc(ulong playerId, ServerRpcParams rpcParams = default)
         {
-            if (!playerAchievements.ContainsKey(playerId))
+            if (playerAchievementData.ContainsKey(playerId)) return;
+
+            playerAchievementData[playerId] = new PlayerAchievementData
             {
-                playerAchievements[playerId] = new PlayerAchievementData
-                {
-                    playerId = playerId,
-                    unlockedAchievements = new List<string>(),
-                    achievementProgress = new Dictionary<string, float>(),
-                    showcasedAchievements = new List<string>(),
-                    featuredAchievements = new List<string>(),
-                    totalPoints = 0,
-                    unlockTimestamps = new Dictionary<string, DateTime>()
-                };
+                playerId = playerId,
+                unlockedAchievements = new List<string>(),
+                achievementProgress = new Dictionary<string, int>(),
+                showcaseAchievements = new List<string>(),
+                totalPoints = 0
+            };
+
+            // Initialize progress for all achievements
+            foreach (var achievementId in achievementDatabase.Keys)
+            {
+                playerAchievementData[playerId].achievementProgress[achievementId] = 0;
             }
+
+            Debug.Log($"Initialized achievements for player {playerId}");
         }
 
         [ServerRpc(RequireOwnership = false)]
-        public void UpdateAchievementProgressServerRpc(ulong playerId, RequirementType requirementType, float progress, ServerRpcParams rpcParams = default)
+        public void UpdateAchievementProgressServerRpc(ulong playerId, AchievementObjectiveType objectiveType, string targetId, int amount, ServerRpcParams rpcParams = default)
         {
-            if (!playerAchievements.ContainsKey(playerId))
+            if (!playerAchievementData.TryGetValue(playerId, out var data)) return;
+
+            foreach (var achievement in achievementDatabase.Values)
             {
-                InitializePlayerAchievementsServerRpc(playerId);
-            }
+                // Skip if already unlocked
+                if (data.unlockedAchievements.Contains(achievement.achievementId)) continue;
 
-            var playerData = playerAchievements[playerId];
+                // Check if objective type matches
+                if (achievement.objectiveType != objectiveType) continue;
 
-            // Find all achievements matching this requirement type
-            var relevantAchievements = achievementDatabase.Values
-                .Where(a => a.requirementType == requirementType && !playerData.unlockedAchievements.Contains(a.achievementId))
-                .ToList();
+                // Check target ID if specified
+                if (!string.IsNullOrEmpty(achievement.targetId) && achievement.targetId != targetId && targetId != "any") continue;
 
-            foreach (var achievement in relevantAchievements)
-            {
+                // Check prerequisites
+                if (achievement.prerequisiteAchievements != null && achievement.prerequisiteAchievements.Count > 0)
+                {
+                    bool hasAllPrereqs = achievement.prerequisiteAchievements.All(prereq => data.unlockedAchievements.Contains(prereq));
+                    if (!hasAllPrereqs) continue;
+                }
+
                 // Update progress
-                if (!playerData.achievementProgress.ContainsKey(achievement.achievementId))
+                int currentProgress = data.achievementProgress[achievement.achievementId];
+                data.achievementProgress[achievement.achievementId] = currentProgress + amount;
+
+                OnAchievementProgress?.Invoke(playerId, achievement.achievementId, data.achievementProgress[achievement.achievementId]);
+
+                // Check if unlocked
+                if (data.achievementProgress[achievement.achievementId] >= achievement.requiredAmount)
                 {
-                    playerData.achievementProgress[achievement.achievementId] = 0;
-                }
-
-                playerData.achievementProgress[achievement.achievementId] = progress;
-
-                OnAchievementProgress?.Invoke(playerId, achievement.achievementId, progress);
-
-                // Check if achievement is complete
-                if (progress >= achievement.requiredProgress)
-                {
-                    UnlockAchievement(playerId, achievement.achievementId);
+                    UnlockAchievement(playerId, achievement);
                 }
             }
+        }
+
+        private void UnlockAchievement(ulong playerId, Achievement achievement)
+        {
+            if (!playerAchievementData.TryGetValue(playerId, out var data)) return;
+
+            data.unlockedAchievements.Add(achievement.achievementId);
+            data.totalPoints += GetAchievementPoints(achievement.tier);
+
+            // Grant rewards
+            if (achievement.rewards.xp > 0)
+            {
+                Progression.ProgressionSystem.Instance?.AddExperienceServerRpc(playerId, achievement.rewards.xp, "achievement");
+            }
+
+            if (achievement.rewards.softCurrency > 0)
+            {
+                Economy.EconomyManager.Instance?.AddCurrencyServerRpc(playerId, Economy.CurrencyType.Soft, achievement.rewards.softCurrency);
+            }
+
+            if (achievement.rewards.hardCurrency > 0)
+            {
+                Economy.EconomyManager.Instance?.AddCurrencyServerRpc(playerId, Economy.CurrencyType.Hard, achievement.rewards.hardCurrency);
+            }
+
+            OnAchievementUnlocked?.Invoke(playerId, achievement.achievementId);
+            NotifyAchievementUnlockedClientRpc(playerId, achievement.achievementId, achievement.achievementName);
+
+            Debug.Log($"Player {playerId} unlocked achievement: {achievement.achievementName}");
+        }
+
+        private int GetAchievementPoints(AchievementTier tier)
+        {
+            return tier switch
+            {
+                AchievementTier.Bronze => 10,
+                AchievementTier.Silver => 25,
+                AchievementTier.Gold => 50,
+                AchievementTier.Platinum => 100,
+                _ => 10
+            };
         }
 
         [ServerRpc(RequireOwnership = false)]
-        public void UnlockAchievementServerRpc(ulong playerId, string achievementId, ServerRpcParams rpcParams = default)
+        public void SetShowcaseAchievementsServerRpc(ulong playerId, List<string> achievementIds, ServerRpcParams rpcParams = default)
         {
-            UnlockAchievement(playerId, achievementId);
+            if (!playerAchievementData.TryGetValue(playerId, out var data)) return;
+
+            // Validate achievements are unlocked
+            var validAchievements = achievementIds.Where(id => data.unlockedAchievements.Contains(id)).Take(maxShowcaseSlots).ToList();
+            data.showcaseAchievements = validAchievements;
+
+            Debug.Log($"Player {playerId} updated achievement showcase");
         }
 
-        private void UnlockAchievement(ulong playerId, string achievementId)
-        {
-            if (!achievementDatabase.TryGetValue(achievementId, out var achievement))
-            {
-                Debug.LogWarning($"Achievement not found: {achievementId}");
-                return;
-            }
-
-            if (!playerAchievements.TryGetValue(playerId, out var playerData))
-            {
-                InitializePlayerAchievementsServerRpc(playerId);
-                playerData = playerAchievements[playerId];
-            }
-
-            if (playerData.unlockedAchievements.Contains(achievementId))
-            {
-                return;
-            }
-
-            // Unlock achievement
-            playerData.unlockedAchievements.Add(achievementId);
-            playerData.unlockTimestamps[achievementId] = DateTime.UtcNow;
-            playerData.totalPoints += achievement.rewardPoints;
-
-            // Award rewards
-            if (achievement.rewardCurrency > 0)
-            {
-                Economy.EconomyManager.Instance?.AddSoftCurrency(playerId, achievement.rewardCurrency);
-            }
-
-            if (!string.IsNullOrEmpty(achievement.rewardCosmetic))
-            {
-                // Unlock cosmetic reward
-                Customization.AppearanceCustomizationSystem.Instance?.UnlockCosmeticServerRpc(playerId, achievement.rewardCosmetic);
-            }
-
-            // Check for chain progression
-            CheckAchievementChains(playerId, achievementId);
-
-            // Trigger platform trophy if enabled
-            if (enablePlatformTrophies)
-            {
-                TriggerPlatformTrophy(playerId, achievement);
-            }
-
-            OnAchievementUnlocked?.Invoke(playerId, achievementId);
-            OnAchievementPointsChanged?.Invoke(playerId, playerData.totalPoints);
-            NotifyAchievementUnlockedClientRpc(playerId, achievementId);
-
-            Debug.Log($"Achievement unlocked for player {playerId}: {achievement.title} (+{achievement.rewardPoints} points)");
-        }
-
-        private void CheckAchievementChains(ulong playerId, string achievementId)
-        {
-            foreach (var chain in achievementChains.Values)
-            {
-                if (!chain.Contains(achievementId))
-                    continue;
-
-                int currentIndex = chain.IndexOf(achievementId);
-                if (currentIndex < chain.Count - 1)
-                {
-                    string nextAchievement = chain[currentIndex + 1];
-                    // Notify player of next achievement in chain
-                    NotifyNextInChainClientRpc(playerId, nextAchievement);
-                }
-            }
-        }
-
-        private void TriggerPlatformTrophy(ulong playerId, Achievement achievement)
-        {
-            // This would integrate with platform-specific trophy systems
-            // Steam Achievements, PlayStation Trophies, Xbox Achievements, etc.
-            Debug.Log($"Triggering platform trophy for {achievement.title}");
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void ShowcaseAchievementServerRpc(ulong playerId, string achievementId, ServerRpcParams rpcParams = default)
-        {
-            if (!playerAchievements.TryGetValue(playerId, out var playerData))
-            {
-                return;
-            }
-
-            if (!playerData.unlockedAchievements.Contains(achievementId))
-            {
-                Debug.LogWarning($"Player {playerId} has not unlocked achievement {achievementId}");
-                return;
-            }
-
-            if (playerData.showcasedAchievements.Count >= maxShowcaseSlots)
-            {
-                Debug.LogWarning($"Player {playerId} has maximum showcased achievements");
-                return;
-            }
-
-            if (!playerData.showcasedAchievements.Contains(achievementId))
-            {
-                playerData.showcasedAchievements.Add(achievementId);
-                OnAchievementShowcased?.Invoke(playerId, achievementId);
-                NotifyAchievementShowcasedClientRpc(playerId, achievementId);
-            }
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void RemoveShowcaseAchievementServerRpc(ulong playerId, string achievementId, ServerRpcParams rpcParams = default)
-        {
-            if (!playerAchievements.TryGetValue(playerId, out var playerData))
-            {
-                return;
-            }
-
-            playerData.showcasedAchievements.Remove(achievementId);
-            NotifyShowcaseRemovedClientRpc(playerId, achievementId);
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SetFeaturedAchievementsServerRpc(ulong playerId, List<string> achievementIds, ServerRpcParams rpcParams = default)
-        {
-            if (!playerAchievements.TryGetValue(playerId, out var playerData))
-            {
-                return;
-            }
-
-            if (achievementIds.Count > maxFeaturedAchievements)
-            {
-                achievementIds = achievementIds.Take(maxFeaturedAchievements).ToList();
-            }
-
-            playerData.featuredAchievements = achievementIds;
-            NotifyFeaturedAchievementsUpdatedClientRpc(playerId, achievementIds.ToArray());
-        }
-
-        #endregion
-
-        #region Client RPCs
-
+        // Client RPCs
         [ClientRpc]
-        private void NotifyAchievementUnlockedClientRpc(ulong playerId, string achievementId)
+        private void NotifyAchievementUnlockedClientRpc(ulong playerId, string achievementId, string achievementName) { }
+
+        // Public getters
+        public Achievement GetAchievement(string achievementId) => achievementDatabase.GetValueOrDefault(achievementId);
+        public PlayerAchievementData GetPlayerAchievementData(ulong playerId) => playerAchievementData.GetValueOrDefault(playerId);
+        public List<Achievement> GetAchievementsByCategory(AchievementCategory category) => 
+            achievementDatabase.Values.Where(a => a.category == category).ToList();
+        public int GetPlayerAchievementCompletion(ulong playerId)
         {
-            OnAchievementUnlocked?.Invoke(playerId, achievementId);
+            if (!playerAchievementData.TryGetValue(playerId, out var data)) return 0;
+            return Mathf.RoundToInt((float)data.unlockedAchievements.Count / achievementDatabase.Count * 100);
         }
-
-        [ClientRpc]
-        private void NotifyNextInChainClientRpc(ulong playerId, string nextAchievementId)
-        {
-            // Client-side notification for next achievement in chain
-        }
-
-        [ClientRpc]
-        private void NotifyAchievementShowcasedClientRpc(ulong playerId, string achievementId)
-        {
-            OnAchievementShowcased?.Invoke(playerId, achievementId);
-        }
-
-        [ClientRpc]
-        private void NotifyShowcaseRemovedClientRpc(ulong playerId, string achievementId)
-        {
-            // Client-side notification
-        }
-
-        [ClientRpc]
-        private void NotifyFeaturedAchievementsUpdatedClientRpc(ulong playerId, string[] achievementIds)
-        {
-            // Client-side notification
-        }
-
-        #endregion
-
-        #region Public API
-
-        public PlayerAchievementData GetPlayerAchievements(ulong playerId)
-        {
-            return playerAchievements.GetValueOrDefault(playerId);
-        }
-
-        public List<Achievement> GetAllAchievements(bool includeHidden = false)
-        {
-            var achievements = achievementDatabase.Values.AsEnumerable();
-
-            if (!includeHidden)
-            {
-                achievements = achievements.Where(a => !a.isHidden);
-            }
-
-            return achievements.ToList();
-        }
-
-        public List<Achievement> GetAchievementsByCategory(AchievementCategory category, bool includeHidden = false)
-        {
-            if (!categorizedAchievements.ContainsKey(category))
-                return new List<Achievement>();
-
-            var achievementIds = categorizedAchievements[category];
-            var achievements = achievementIds
-                .Select(id => achievementDatabase.GetValueOrDefault(id))
-                .Where(a => a != null);
-
-            if (!includeHidden)
-            {
-                achievements = achievements.Where(a => !a.isHidden);
-            }
-
-            return achievements.ToList();
-        }
-
-        public Achievement GetAchievement(string achievementId)
-        {
-            return achievementDatabase.GetValueOrDefault(achievementId);
-        }
-
-        public float GetCompletionPercentage(ulong playerId)
-        {
-            if (!playerAchievements.TryGetValue(playerId, out var playerData))
-                return 0f;
-
-            int totalAchievements = achievementDatabase.Count;
-            int unlockedAchievements = playerData.unlockedAchievements.Count;
-
-            return (float)unlockedAchievements / totalAchievements * 100f;
-        }
-
-        public Dictionary<AchievementCategory, float> GetCategoryCompletion(ulong playerId)
-        {
-            var completion = new Dictionary<AchievementCategory, float>();
-
-            foreach (var category in categorizedAchievements.Keys)
-            {
-                int totalInCategory = categorizedAchievements[category].Count;
-                int unlockedInCategory = 0;
-
-                if (playerAchievements.TryGetValue(playerId, out var playerData))
-                {
-                    unlockedInCategory = categorizedAchievements[category]
-                        .Count(id => playerData.unlockedAchievements.Contains(id));
-                }
-
-                completion[category] = totalInCategory > 0 ? (float)unlockedInCategory / totalInCategory * 100f : 0f;
-            }
-
-            return completion;
-        }
-
-        public List<Achievement> GetRecentlyUnlocked(ulong playerId, int count = 5)
-        {
-            if (!playerAchievements.TryGetValue(playerId, out var playerData))
-                return new List<Achievement>();
-
-            return playerData.unlockTimestamps
-                .OrderByDescending(kvp => kvp.Value)
-                .Take(count)
-                .Select(kvp => achievementDatabase.GetValueOrDefault(kvp.Key))
-                .Where(a => a != null)
-                .ToList();
-        }
-
-        public List<Achievement> GetRarestAchievements(int count = 10)
-        {
-            // Calculate rarity based on unlock percentage
-            var achievementUnlockCounts = new Dictionary<string, int>();
-
-            foreach (var playerData in playerAchievements.Values)
-            {
-                foreach (var achievementId in playerData.unlockedAchievements)
-                {
-                    achievementUnlockCounts[achievementId] = achievementUnlockCounts.GetValueOrDefault(achievementId) + 1;
-                }
-            }
-
-            int totalPlayers = playerAchievements.Count;
-
-            return achievementUnlockCounts
-                .OrderBy(kvp => kvp.Value)
-                .Take(count)
-                .Select(kvp => achievementDatabase.GetValueOrDefault(kvp.Key))
-                .Where(a => a != null)
-                .ToList();
-        }
-
-        #endregion
     }
 
-    #region Data Structures
-
+    // Data structures
     [Serializable]
     public class Achievement
     {
         public string achievementId;
-        public string title;
+        public string achievementName;
         public string description;
         public AchievementCategory category;
         public AchievementTier tier;
-        public bool isHidden;
-        public RequirementType requirementType;
-        public float requiredProgress;
-        public int rewardCurrency;
-        public int rewardPoints;
-        public string rewardCosmetic;
-        public string revealedTitle;
-        public string revealedDescription;
+        public AchievementObjectiveType objectiveType;
+        public string targetId;
+        public List<string> targetIds;
+        public int requiredAmount;
+        public List<string> prerequisiteAchievements;
+        public AchievementRewards rewards;
+        public bool hidden;
+    }
+
+    [Serializable]
+    public class AchievementRewards
+    {
+        public int xp;
+        public int softCurrency;
+        public int hardCurrency;
+        public string title;
+        public string cosmetic;
     }
 
     [Serializable]
@@ -817,53 +656,22 @@ namespace ZombieGame.Achievements
     {
         public ulong playerId;
         public List<string> unlockedAchievements;
-        public Dictionary<string, float> achievementProgress;
-        public List<string> showcasedAchievements;
-        public List<string> featuredAchievements;
+        public Dictionary<string, int> achievementProgress;
+        public List<string> showcaseAchievements;
         public int totalPoints;
-        public Dictionary<string, DateTime> unlockTimestamps;
     }
 
-    public enum AchievementCategory
-    {
-        Combat,
-        Survival,
-        Exploration,
-        Economy,
-        Crafting,
-        Social,
-        Progression,
-        Bosses,
-        Collection,
-        Secret
+    public enum AchievementCategory { Combat, Survival, Exploration, Crafting, Social, Collection, Progression, Special }
+    public enum AchievementTier { Bronze, Silver, Gold, Platinum }
+    public enum AchievementObjectiveType 
+    { 
+        Kill, HeadshotKill, KillUnique, KillStreak,
+        Survive, NoDamage,
+        Distance, DiscoverLocations,
+        Craft, CraftQuality,
+        PartyMission, ClanCreate, ClanLevel, Trade,
+        CollectUnique,
+        Level, Prestige,
+        DeathType, MissionConstraint, Currency
     }
-
-    public enum AchievementTier
-    {
-        Bronze,
-        Silver,
-        Gold,
-        Platinum,
-        Diamond
-    }
-
-    public enum RequirementType
-    {
-        KillCount,
-        HeadshotKills,
-        SurvivalTime,
-        SoloSurvivalTime,
-        LocationsDiscovered,
-        CurrencyEarned,
-        ItemsCrafted,
-        FriendsAdded,
-        PartyMissionsCompleted,
-        LevelReached,
-        BossesDefeated,
-        RaidBossesDefeated,
-        UniqueItemsCollected,
-        SpecialCondition
-    }
-
-    #endregion
 }
