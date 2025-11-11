@@ -1,186 +1,251 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using UnityEngine;
 using Unity.Netcode;
+using UnityEngine;
+using System.Collections.Generic;
 
-namespace ZombieGame.Tutorial
+namespace ZombieGame
 {
-    public class TutorialSystem : NetworkBehaviour
+    /// <summary>
+    /// Tutorial and Onboarding System - Essential for user experience
+    /// Features: Interactive tutorials, tooltips, progressive learning
+    /// First-time user experience (FTUE) optimization
+    /// </summary>
+    public class TutorialSystem : MonoBehaviour
     {
         public static TutorialSystem Instance { get; private set; }
 
-        private Dictionary<string, TutorialStep> tutorialSteps = new Dictionary<string, TutorialStep>();
-        private Dictionary<ulong, PlayerTutorialData> playerTutorialData = new Dictionary<ulong, PlayerTutorialData>();
+        [Header("Tutorial Settings")]
+        [SerializeField] private bool enableTutorials = true;
+        [SerializeField] private bool skipForVeterans = true;
+        [SerializeField] private float tooltipDuration = 5f;
 
-        public event Action<ulong, string> OnTutorialStepCompleted;
+        private Dictionary<string, Tutorial> tutorials = new Dictionary<string, Tutorial>();
+        private Dictionary<string, bool> completedTutorials = new Dictionary<string, bool>();
+        private Queue<TutorialStep> activeSteps = new Queue<TutorialStep>();
+        private TutorialStep currentStep;
+
+        // Events
+        public event System.Action<string> OnTutorialStarted;
+        public event System.Action<string> OnTutorialCompleted;
+        public event System.Action<TutorialStep> OnStepCompleted;
+
+        [System.Serializable]
+        public class Tutorial
+        {
+            public string tutorialId;
+            public string tutorialName;
+            public string description;
+            public TutorialCategory category;
+            public List<TutorialStep> steps = new List<TutorialStep>();
+            public bool isOptional = false;
+            public int requiredLevel = 0;
+        }
+
+        [System.Serializable]
+        public class TutorialStep
+        {
+            public string stepId;
+            public string title;
+            public string instruction;
+            public StepType type;
+            public string targetAction;
+            public Vector3 highlightPosition;
+            public string highlightObject;
+            public bool pauseGame = false;
+            public float timeLimit = 0f;
+            public string completionCondition;
+        }
+
+        public enum TutorialCategory
+        {
+            BasicMovement, Combat, Survival, Multiplayer, Advanced, GameModes, Social, Customization
+        }
+
+        public enum StepType
+        {
+            Tooltip, HighlightUI, HighlightWorld, WaitForAction, Cutscene, Interactive
+        }
 
         private void Awake()
         {
-            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
-            Instance = this;
-        }
-
-        public override void OnNetworkSpawn()
-        {
-            base.OnNetworkSpawn();
-            if (IsServer) InitializeTutorial();
-        }
-
-        private void InitializeTutorial()
-        {
-            // BASIC TUTORIAL CHAIN
-            tutorialSteps["welcome"] = new TutorialStep { stepId = "welcome", stepName = "Welcome", description = "Welcome to the apocalypse", category = TutorialCategory.Basics, completionType = CompletionType.Manual, rewards = new TutorialRewards { xp = 100, currency = 50 } };
-            tutorialSteps["movement"] = new TutorialStep { stepId = "movement", stepName = "Movement", description = "Learn to move around", category = TutorialCategory.Basics, completionType = CompletionType.Distance, requiredAmount = 100, prerequisites = new List<string> { "welcome" }, rewards = new TutorialRewards { xp = 100, currency = 50 } };
-            tutorialSteps["combat"] = new TutorialStep { stepId = "combat", stepName = "Combat Basics", description = "Kill your first zombie", category = TutorialCategory.Combat, completionType = CompletionType.Kill, requiredAmount = 1, prerequisites = new List<string> { "movement" }, rewards = new TutorialRewards { xp = 200, currency = 100 } };
-            tutorialSteps["inventory"] = new TutorialStep { stepId = "inventory", stepName = "Inventory", description = "Open your inventory", category = TutorialCategory.Systems, completionType = CompletionType.Manual, prerequisites = new List<string> { "combat" }, rewards = new TutorialRewards { xp = 100, currency = 50 } };
-            tutorialSteps["looting"] = new TutorialStep { stepId = "looting", stepName = "Looting", description = "Loot your first container", category = TutorialCategory.Systems, completionType = CompletionType.Loot, requiredAmount = 1, prerequisites = new List<string> { "inventory" }, rewards = new TutorialRewards { xp = 150, currency = 75, items = new List<string> { "consumable_medkit" } } };
-
-            // ADVANCED TUTORIAL
-            tutorialSteps["crafting"] = new TutorialStep { stepId = "crafting", stepName = "Crafting", description = "Craft your first item", category = TutorialCategory.Systems, completionType = CompletionType.Craft, requiredAmount = 1, prerequisites = new List<string> { "looting" }, rewards = new TutorialRewards { xp = 200, currency = 100 } };
-            tutorialSteps["base_building"] = new TutorialStep { stepId = "base_building", stepName = "Base Building", description = "Build a structure", category = TutorialCategory.Advanced, completionType = CompletionType.Build, requiredAmount = 1, prerequisites = new List<string> { "crafting" }, rewards = new TutorialRewards { xp = 300, currency = 150 } };
-            tutorialSteps["party"] = new TutorialStep { stepId = "party", stepName = "Party Up", description = "Join or create a party", category = TutorialCategory.Social, completionType = CompletionType.Manual, prerequisites = new List<string> { "combat" }, rewards = new TutorialRewards { xp = 200, currency = 100 } };
-            tutorialSteps["clan"] = new TutorialStep { stepId = "clan", stepName = "Clan System", description = "Join a clan", category = TutorialCategory.Social, completionType = CompletionType.Manual, prerequisites = new List<string> { "party" }, rewards = new TutorialRewards { xp = 300, currency = 200 } };
-
-            // COMPLETION REWARDS
-            tutorialSteps["tutorial_complete"] = new TutorialStep { stepId = "tutorial_complete", stepName = "Tutorial Complete", description = "Complete all tutorial steps", category = TutorialCategory.Completion, completionType = CompletionType.Manual, rewards = new TutorialRewards { xp = 1000, currency = 500, hardCurrency = 50, items = new List<string> { "crate_rare", "weapon_rifle_m4" }, cosmetics = new List<string> { "title_graduate" } } };
-
-            Debug.Log($"Initialized {tutorialSteps.Count} tutorial steps");
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void InitializePlayerTutorialServerRpc(ulong playerId, ServerRpcParams rpcParams = default)
-        {
-            if (playerTutorialData.ContainsKey(playerId)) return;
-
-            playerTutorialData[playerId] = new PlayerTutorialData
+            if (Instance == null)
             {
-                playerId = playerId,
-                completedSteps = new List<string>(),
-                currentStep = "welcome",
-                tutorialEnabled = true,
-                progress = new Dictionary<string, int>()
+                Instance = this;
+                DontDestroyOnLoad(gameObject);
+                InitializeTutorials();
+                LoadProgress();
+            }
+            else { Destroy(gameObject); }
+        }
+
+        private void InitializeTutorials()
+        {
+            CreateBasicMovementTutorial();
+            CreateCombatTutorial();
+            CreateSurvivalTutorial();
+            CreateMultiplayerTutorial();
+            Debug.Log($"[Tutorial] Initialized {tutorials.Count} tutorials");
+        }
+
+        private void CreateBasicMovementTutorial()
+        {
+            var tutorial = new Tutorial
+            {
+                tutorialId = "basic_movement",
+                tutorialName = "Basic Movement",
+                description = "Learn how to move and interact",
+                category = TutorialCategory.BasicMovement,
+                steps = new List<TutorialStep>
+                {
+                    new TutorialStep { stepId = "welcome", title = "Welcome!", instruction = "Welcome to the game!", type = StepType.Tooltip },
+                    new TutorialStep { stepId = "move", title = "Movement", instruction = "Use WASD to move", type = StepType.WaitForAction, targetAction = "Move", completionCondition = "PlayerMoved" },
+                    new TutorialStep { stepId = "look", title = "Camera", instruction = "Move mouse to look around", type = StepType.WaitForAction, targetAction = "Look", completionCondition = "CameraMoved" },
+                    new TutorialStep { stepId = "sprint", title = "Sprint", instruction = "Hold Shift to sprint", type = StepType.WaitForAction, targetAction = "Sprint", completionCondition = "PlayerSprinted" },
+                    new TutorialStep { stepId = "jump", title = "Jump", instruction = "Press Space to jump", type = StepType.WaitForAction, targetAction = "Jump", completionCondition = "PlayerJumped" }
+                }
             };
+            tutorials[tutorial.tutorialId] = tutorial;
         }
 
-        [ServerRpc(RequireOwnership = false)]
-        public void UpdateTutorialProgressServerRpc(ulong playerId, CompletionType type, int amount, ServerRpcParams rpcParams = default)
+        private void CreateCombatTutorial()
         {
-            if (!playerTutorialData.TryGetValue(playerId, out var data)) return;
-            if (!data.tutorialEnabled) return;
-
-            var currentStepData = tutorialSteps.GetValueOrDefault(data.currentStep);
-            if (currentStepData == null) return;
-
-            if (currentStepData.completionType == type)
+            var tutorial = new Tutorial
             {
-                if (!data.progress.ContainsKey(data.currentStep))
+                tutorialId = "basic_combat",
+                tutorialName = "Basic Combat",
+                description = "Learn how to fight zombies",
+                category = TutorialCategory.Combat,
+                steps = new List<TutorialStep>
                 {
-                    data.progress[data.currentStep] = 0;
+                    new TutorialStep { stepId = "equip", title = "Equip Weapon", instruction = "Press 1 to equip weapon", type = StepType.WaitForAction, targetAction = "EquipWeapon", completionCondition = "WeaponEquipped" },
+                    new TutorialStep { stepId = "aim", title = "Aim", instruction = "Right-click to aim", type = StepType.WaitForAction, targetAction = "Aim", completionCondition = "PlayerAimed" },
+                    new TutorialStep { stepId = "shoot", title = "Shoot", instruction = "Left-click to shoot", type = StepType.WaitForAction, targetAction = "Shoot", completionCondition = "PlayerShot" },
+                    new TutorialStep { stepId = "reload", title = "Reload", instruction = "Press R to reload", type = StepType.WaitForAction, targetAction = "Reload", completionCondition = "WeaponReloaded" },
+                    new TutorialStep { stepId = "kill", title = "Eliminate", instruction = "Defeat the zombie", type = StepType.WaitForAction, targetAction = "KillEnemy", completionCondition = "EnemyKilled" }
                 }
+            };
+            tutorials[tutorial.tutorialId] = tutorial;
+        }
 
-                data.progress[data.currentStep] += amount;
-
-                if (data.progress[data.currentStep] >= currentStepData.requiredAmount)
+        private void CreateSurvivalTutorial()
+        {
+            var tutorial = new Tutorial
+            {
+                tutorialId = "survival_basics",
+                tutorialName = "Survival Basics",
+                description = "Learn survival mechanics",
+                category = TutorialCategory.Survival,
+                steps = new List<TutorialStep>
                 {
-                    CompleteTutorialStepServerRpc(playerId, data.currentStep);
+                    new TutorialStep { stepId = "health", title = "Health", instruction = "Monitor your health bar", type = StepType.HighlightUI, highlightObject = "HealthBar" },
+                    new TutorialStep { stepId = "heal", title = "Healing", instruction = "Press H to use medkit", type = StepType.WaitForAction, targetAction = "UseHeal", completionCondition = "UsedMedkit" },
+                    new TutorialStep { stepId = "loot", title = "Looting", instruction = "Press E to pick up items", type = StepType.WaitForAction, targetAction = "PickupItem", completionCondition = "ItemPickedUp" },
+                    new TutorialStep { stepId = "inventory", title = "Inventory", instruction = "Press Tab for inventory", type = StepType.WaitForAction, targetAction = "OpenInventory", completionCondition = "InventoryOpened" }
                 }
+            };
+            tutorials[tutorial.tutorialId] = tutorial;
+        }
+
+        private void CreateMultiplayerTutorial()
+        {
+            var tutorial = new Tutorial
+            {
+                tutorialId = "multiplayer_basics",
+                tutorialName = "Multiplayer Basics",
+                description = "Learn multiplayer features",
+                category = TutorialCategory.Multiplayer,
+                isOptional = true,
+                steps = new List<TutorialStep>
+                {
+                    new TutorialStep { stepId = "team", title = "Teamwork", instruction = "Work with your team!", type = StepType.Tooltip },
+                    new TutorialStep { stepId = "chat", title = "Chat", instruction = "Press Enter for chat", type = StepType.WaitForAction, targetAction = "OpenChat", completionCondition = "ChatOpened" },
+                    new TutorialStep { stepId = "ping", title = "Ping", instruction = "Press Z to ping", type = StepType.WaitForAction, targetAction = "Ping", completionCondition = "PingSent" }
+                }
+            };
+            tutorials[tutorial.tutorialId] = tutorial;
+        }
+
+        public void StartTutorial(string tutorialId)
+        {
+            if (!enableTutorials || !tutorials.ContainsKey(tutorialId)) return;
+            if (IsTutorialCompleted(tutorialId) && skipForVeterans) return;
+
+            var tutorial = tutorials[tutorialId];
+            foreach (var step in tutorial.steps) activeSteps.Enqueue(step);
+
+            OnTutorialStarted?.Invoke(tutorialId);
+            Debug.Log($"[Tutorial] Started: {tutorial.tutorialName}");
+            NextStep();
+        }
+
+        private void NextStep()
+        {
+            if (activeSteps.Count == 0) { CompleteTutorial(); return; }
+            currentStep = activeSteps.Dequeue();
+            if (currentStep.pauseGame) Time.timeScale = 0f;
+            DisplayStep(currentStep);
+        }
+
+        private void DisplayStep(TutorialStep step)
+        {
+            Debug.Log($"[Tutorial] Step: {step.title} - {step.instruction}");
+        }
+
+        public void CompleteStep(string condition)
+        {
+            if (currentStep != null && currentStep.completionCondition == condition)
+            {
+                if (currentStep.pauseGame) Time.timeScale = 1f;
+                OnStepCompleted?.Invoke(currentStep);
+                NextStep();
             }
         }
 
-        [ServerRpc(RequireOwnership = false)]
-        public void CompleteTutorialStepServerRpc(ulong playerId, string stepId, ServerRpcParams rpcParams = default)
+        private void CompleteTutorial()
         {
-            if (!playerTutorialData.TryGetValue(playerId, out var data)) return;
-            if (data.completedSteps.Contains(stepId)) return;
-
-            var step = tutorialSteps.GetValueOrDefault(stepId);
-            if (step == null) return;
-
-            data.completedSteps.Add(stepId);
-
-            // Grant rewards
-            if (step.rewards != null)
+            if (currentStep != null)
             {
-                if (step.rewards.xp > 0)
-                    Progression.ProgressionSystem.Instance?.AddExperienceServerRpc(playerId, step.rewards.xp, "tutorial");
-                if (step.rewards.currency > 0)
-                    Economy.EconomyManager.Instance?.AddCurrencyServerRpc(playerId, Economy.CurrencyType.Soft, step.rewards.currency);
-                if (step.rewards.hardCurrency > 0)
-                    Economy.EconomyManager.Instance?.AddCurrencyServerRpc(playerId, Economy.CurrencyType.Hard, step.rewards.hardCurrency);
-                
-                foreach (var itemId in step.rewards.items)
+                string tutorialId = FindTutorialIdByStep(currentStep);
+                if (tutorialId != null)
                 {
-                    Inventory.InventorySystem.Instance?.AddItemServerRpc(playerId, itemId, 1, Inventory.ContainerType.Backpack);
+                    completedTutorials[tutorialId] = true;
+                    SaveProgress();
+                    OnTutorialCompleted?.Invoke(tutorialId);
                 }
             }
-
-            // Find next step
-            string nextStep = FindNextTutorialStep(data);
-            data.currentStep = nextStep;
-
-            OnTutorialStepCompleted?.Invoke(playerId, stepId);
-            NotifyTutorialStepCompletedClientRpc(playerId, stepId, nextStep);
-
-            Debug.Log($"Player {playerId} completed tutorial step: {step.stepName}");
+            currentStep = null;
         }
 
-        private string FindNextTutorialStep(PlayerTutorialData data)
+        private string FindTutorialIdByStep(TutorialStep step)
         {
-            foreach (var step in tutorialSteps.Values)
-            {
-                if (data.completedSteps.Contains(step.stepId)) continue;
-
-                bool hasPrereqs = step.prerequisites == null || step.prerequisites.All(p => data.completedSteps.Contains(p));
-                if (hasPrereqs)
-                {
-                    return step.stepId;
-                }
-            }
-
-            return null; // Tutorial complete
+            foreach (var kvp in tutorials)
+                if (kvp.Value.steps.Contains(step)) return kvp.Key;
+            return null;
         }
 
-        [ClientRpc]
-        private void NotifyTutorialStepCompletedClientRpc(ulong playerId, string completedStep, string nextStep) { }
+        public bool IsTutorialCompleted(string id) => completedTutorials.ContainsKey(id) && completedTutorials[id];
+        public void ResetTutorial(string id) { completedTutorials[id] = false; SaveProgress(); }
+        public void ResetAllTutorials() { completedTutorials.Clear(); SaveProgress(); }
 
-        public PlayerTutorialData GetPlayerTutorialData(ulong playerId) => playerTutorialData.GetValueOrDefault(playerId);
-        public TutorialStep GetTutorialStep(string stepId) => tutorialSteps.GetValueOrDefault(stepId);
+        private void SaveProgress()
+        {
+            foreach (var kvp in completedTutorials)
+                PlayerPrefs.SetInt($"Tutorial_{kvp.Key}", kvp.Value ? 1 : 0);
+            PlayerPrefs.Save();
+        }
+
+        private void LoadProgress()
+        {
+            foreach (var tutorial in tutorials.Values)
+                completedTutorials[tutorial.tutorialId] = PlayerPrefs.GetInt($"Tutorial_{tutorial.tutorialId}", 0) == 1;
+        }
+
+        public float GetCompletionPercentage()
+        {
+            if (tutorials.Count == 0) return 100f;
+            int completed = 0;
+            foreach (var t in tutorials.Values)
+                if (IsTutorialCompleted(t.tutorialId)) completed++;
+            return (float)completed / tutorials.Count * 100f;
+        }
     }
-
-    [Serializable]
-    public class TutorialStep
-    {
-        public string stepId;
-        public string stepName;
-        public string description;
-        public TutorialCategory category;
-        public CompletionType completionType;
-        public int requiredAmount;
-        public List<string> prerequisites;
-        public TutorialRewards rewards;
-    }
-
-    [Serializable]
-    public class TutorialRewards
-    {
-        public int xp;
-        public int currency;
-        public int hardCurrency;
-        public List<string> items = new List<string>();
-        public List<string> cosmetics = new List<string>();
-    }
-
-    [Serializable]
-    public class PlayerTutorialData
-    {
-        public ulong playerId;
-        public List<string> completedSteps;
-        public string currentStep;
-        public bool tutorialEnabled;
-        public Dictionary<string, int> progress;
-    }
-
-    public enum TutorialCategory { Basics, Combat, Systems, Advanced, Social, Completion }
-    public enum CompletionType { Manual, Kill, Loot, Craft, Build, Distance }
 }
