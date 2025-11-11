@@ -1,332 +1,345 @@
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using UnityEngine;
-using Unity.Netcode;
+using System.Collections.Generic;
+using System;
 
-namespace ZombieGame.Notifications
+namespace ZombieGame
 {
     /// <summary>
-    /// Comprehensive notification system for in-game alerts, pop-ups, toasts, and notifications
-    /// across all game systems with priority queuing and persistence.
+    /// Notification System - Smart, non-intrusive player communication
+    /// Features: Priority queuing, toast notifications, achievement popups, system messages
+    /// Essential for keeping players informed without overwhelming them
     /// </summary>
-    public class NotificationSystem : NetworkBehaviour
+    public class NotificationSystem : MonoBehaviour
     {
         public static NotificationSystem Instance { get; private set; }
 
-        [Header("Notification Configuration")]
-        [SerializeField] private int maxActiveNotifications = 5;
-        [SerializeField] private float defaultDisplayDuration = 5f;
-        [SerializeField] private int maxStoredNotifications = 50;
+        [Header("Notification Settings")]
+        [SerializeField] private bool enableNotifications = true;
+        [SerializeField] private int maxSimultaneousNotifications = 3;
+        [SerializeField] private float defaultDuration = 5f;
+        [SerializeField] private float queueCheckInterval = 0.5f;
 
-        private Dictionary<ulong, List<Notification>> playerNotifications = new Dictionary<ulong, List<Notification>>();
-        private Dictionary<ulong, Queue<Notification>> activeNotificationQueues = new Dictionary<ulong, Queue<Notification>>();
+        private Queue<Notification> notificationQueue = new Queue<Notification>();
+        private List<Notification> activeNotifications = new List<Notification>();
+        private float lastQueueCheck = 0f;
 
-        public event Action<ulong, string, NotificationType> OnNotificationReceived;
-        public event Action<ulong, string> OnNotificationDismissed;
+        // Events
+        public event Action<Notification> OnNotificationShown;
+        public event Action<Notification> OnNotificationDismissed;
+
+        [Serializable]
+        public class Notification
+        {
+            public string id;
+            public NotificationType type;
+            public NotificationPriority priority;
+            public string title;
+            public string message;
+            public Sprite icon;
+            public float duration;
+            public DateTime timestamp;
+            public bool isDismissible = true;
+            public Action onClickCallback;
+            public Color backgroundColor;
+        }
+
+        public enum NotificationType
+        {
+            Info,
+            Success,
+            Warning,
+            Error,
+            Achievement,
+            LevelUp,
+            ItemReceived,
+            FriendOnline,
+            PartyInvite,
+            MatchFound,
+            System
+        }
+
+        public enum NotificationPriority
+        {
+            Low,       // Can be queued for a while
+            Normal,    // Standard priority
+            High,      // Show soon
+            Critical   // Show immediately, bump others
+        }
 
         private void Awake()
         {
-            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
-            Instance = this;
+            if (Instance == null)
+            {
+                Instance = this;
+                DontDestroyOnLoad(gameObject);
+            }
+            else { Destroy(gameObject); }
         }
 
-        [ServerRpc(RequireOwnership = false)]
-        public void SendNotificationServerRpc(ulong playerId, string title, string message, NotificationType type, NotificationPriority priority, float duration, List<NotificationAction> actions, ServerRpcParams rpcParams = default)
+        private void Update()
         {
-            if (!playerNotifications.ContainsKey(playerId))
+            if (!enableNotifications) return;
+
+            // Update active notifications
+            for (int i = activeNotifications.Count - 1; i >= 0; i--)
             {
-                playerNotifications[playerId] = new List<Notification>();
-                activeNotificationQueues[playerId] = new Queue<Notification>();
+                var notification = activeNotifications[i];
+                if (Time.time - (float)(DateTime.UtcNow - notification.timestamp).TotalSeconds >= notification.duration)
+                {
+                    DismissNotification(notification);
+                }
             }
 
+            // Process queue
+            if (Time.time - lastQueueCheck >= queueCheckInterval)
+            {
+                ProcessQueue();
+                lastQueueCheck = Time.time;
+            }
+        }
+
+        public void ShowNotification(NotificationType type, string title, string message, 
+            NotificationPriority priority = NotificationPriority.Normal, float duration = 0f)
+        {
+            if (!enableNotifications) return;
+
+            var notification = CreateNotification(type, title, message, priority, duration);
+            QueueNotification(notification);
+        }
+
+        private Notification CreateNotification(NotificationType type, string title, string message,
+            NotificationPriority priority, float duration)
+        {
             var notification = new Notification
             {
-                notificationId = Guid.NewGuid().ToString(),
-                title = title,
-                message = message,
+                id = Guid.NewGuid().ToString(),
                 type = type,
                 priority = priority,
-                displayDuration = duration > 0 ? duration : defaultDisplayDuration,
-                actions = actions ?? new List<NotificationAction>(),
+                title = title,
+                message = message,
+                duration = duration > 0 ? duration : defaultDuration,
                 timestamp = DateTime.UtcNow,
-                isRead = false,
-                isPersistent = priority >= NotificationPriority.High
+                backgroundColor = GetTypeColor(type)
             };
 
-            // Add to storage
-            playerNotifications[playerId].Add(notification);
+            return notification;
+        }
 
-            // Limit stored notifications
-            if (playerNotifications[playerId].Count > maxStoredNotifications)
+        private void QueueNotification(Notification notification)
+        {
+            // Critical notifications bypass queue
+            if (notification.priority == NotificationPriority.Critical)
             {
-                playerNotifications[playerId].RemoveAt(0);
+                ShowImmediately(notification);
+                return;
             }
 
-            // Queue for display
-            activeNotificationQueues[playerId].Enqueue(notification);
-
-            OnNotificationReceived?.Invoke(playerId, notification.notificationId, type);
-            NotifyPlayerClientRpc(playerId, notification.notificationId, title, message, type, priority, duration);
-
-            Debug.Log($"Notification sent to player {playerId}: {title}");
-        }
-
-        // Convenience methods for common notifications
-        [ServerRpc(RequireOwnership = false)]
-        public void SendAchievementNotificationServerRpc(ulong playerId, string achievementName, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Achievement Unlocked!",
-                $"You unlocked: {achievementName}",
-                NotificationType.Achievement,
-                NotificationPriority.High,
-                7f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "view", actionText = "View", actionType = ActionType.OpenUI, actionData = "achievements" }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendLevelUpNotificationServerRpc(ulong playerId, int newLevel, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Level Up!",
-                $"You reached level {newLevel}!",
-                NotificationType.LevelUp,
-                NotificationPriority.High,
-                5f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "claim", actionText = "Claim Rewards", actionType = ActionType.ClaimReward, actionData = $"level_{newLevel}" }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendRewardNotificationServerRpc(ulong playerId, string rewardName, int amount, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Reward Received!",
-                $"You received {amount}x {rewardName}",
-                NotificationType.Reward,
-                NotificationPriority.Medium,
-                4f,
-                null
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendPartyInviteNotificationServerRpc(ulong playerId, string inviterName, string partyId, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Party Invite",
-                $"{inviterName} invited you to join their party",
-                NotificationType.PartyInvite,
-                NotificationPriority.High,
-                30f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "accept", actionText = "Accept", actionType = ActionType.AcceptInvite, actionData = partyId },
-                    new NotificationAction { actionId = "decline", actionText = "Decline", actionType = ActionType.DeclineInvite, actionData = partyId }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendClanInviteNotificationServerRpc(ulong playerId, string clanName, string clanId, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Clan Invite",
-                $"You've been invited to join {clanName}",
-                NotificationType.ClanInvite,
-                NotificationPriority.High,
-                60f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "accept", actionText = "Accept", actionType = ActionType.AcceptInvite, actionData = clanId },
-                    new NotificationAction { actionId = "decline", actionText = "Decline", actionType = ActionType.DeclineInvite, actionData = clanId }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendEventStartNotificationServerRpc(ulong playerId, string eventName, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Event Started!",
-                $"{eventName} is now active!",
-                NotificationType.EventStart,
-                NotificationPriority.High,
-                10f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "view", actionText = "View Event", actionType = ActionType.OpenUI, actionData = "events" }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendDailyRewardNotificationServerRpc(ulong playerId, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Daily Reward Available!",
-                "Claim your daily login reward",
-                NotificationType.DailyReward,
-                NotificationPriority.High,
-                15f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "claim", actionText = "Claim Now", actionType = ActionType.OpenUI, actionData = "daily_rewards" }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendMailNotificationServerRpc(ulong playerId, string senderName, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "New Mail",
-                $"You have new mail from {senderName}",
-                NotificationType.Mail,
-                NotificationPriority.Medium,
-                5f,
-                new List<NotificationAction>
-                {
-                    new NotificationAction { actionId = "view", actionText = "Read", actionType = ActionType.OpenUI, actionData = "mailbox" }
-                }
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendWarningNotificationServerRpc(ulong playerId, string warningMessage, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "Warning",
-                warningMessage,
-                NotificationType.Warning,
-                NotificationPriority.Critical,
-                10f,
-                null
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void SendSystemNotificationServerRpc(ulong playerId, string message, ServerRpcParams rpcParams = default)
-        {
-            SendNotificationServerRpc(
-                playerId,
-                "System Message",
-                message,
-                NotificationType.System,
-                NotificationPriority.Medium,
-                5f,
-                null
-            );
-        }
-
-        [ServerRpc(RequireOwnership = false)]
-        public void MarkNotificationAsReadServerRpc(ulong playerId, string notificationId, ServerRpcParams rpcParams = default)
-        {
-            if (!playerNotifications.TryGetValue(playerId, out var notifications)) return;
-
-            var notification = notifications.FirstOrDefault(n => n.notificationId == notificationId);
-            if (notification != null)
+            // Add to queue based on priority
+            if (notification.priority == NotificationPriority.High)
             {
-                notification.isRead = true;
+                // Insert near front of queue
+                var tempQueue = new Queue<Notification>();
+                bool inserted = false;
+
+                while (notificationQueue.Count > 0)
+                {
+                    var existing = notificationQueue.Dequeue();
+                    if (!inserted && existing.priority < NotificationPriority.High)
+                    {
+                        tempQueue.Enqueue(notification);
+                        inserted = true;
+                    }
+                    tempQueue.Enqueue(existing);
+                }
+
+                if (!inserted) tempQueue.Enqueue(notification);
+
+                notificationQueue = tempQueue;
+            }
+            else
+            {
+                notificationQueue.Enqueue(notification);
+            }
+
+            Debug.Log($"[Notification] Queued: {notification.title} (Queue size: {notificationQueue.Count})");
+        }
+
+        private void ShowImmediately(Notification notification)
+        {
+            if (activeNotifications.Count >= maxSimultaneousNotifications)
+            {
+                // Remove lowest priority active notification
+                var lowestPriority = activeNotifications[0];
+                foreach (var active in activeNotifications)
+                {
+                    if (active.priority < lowestPriority.priority)
+                        lowestPriority = active;
+                }
+                DismissNotification(lowestPriority);
+            }
+
+            DisplayNotification(notification);
+        }
+
+        private void ProcessQueue()
+        {
+            if (notificationQueue.Count == 0) return;
+            if (activeNotifications.Count >= maxSimultaneousNotifications) return;
+
+            var notification = notificationQueue.Dequeue();
+            DisplayNotification(notification);
+        }
+
+        private void DisplayNotification(Notification notification)
+        {
+            activeNotifications.Add(notification);
+            OnNotificationShown?.Invoke(notification);
+
+            Debug.Log($"[Notification] Showing: [{notification.type}] {notification.title} - {notification.message}");
+        }
+
+        public void DismissNotification(Notification notification)
+        {
+            if (!activeNotifications.Contains(notification)) return;
+
+            activeNotifications.Remove(notification);
+            OnNotificationDismissed?.Invoke(notification);
+
+            Debug.Log($"[Notification] Dismissed: {notification.title}");
+        }
+
+        public void DismissAll()
+        {
+            foreach (var notification in new List<Notification>(activeNotifications))
+            {
+                DismissNotification(notification);
             }
         }
 
-        [ServerRpc(RequireOwnership = false)]
-        public void DismissNotificationServerRpc(ulong playerId, string notificationId, ServerRpcParams rpcParams = default)
+        private Color GetTypeColor(NotificationType type)
         {
-            if (!playerNotifications.TryGetValue(playerId, out var notifications)) return;
-
-            var notification = notifications.FirstOrDefault(n => n.notificationId == notificationId);
-            if (notification != null)
+            switch (type)
             {
-                notifications.Remove(notification);
-                OnNotificationDismissed?.Invoke(playerId, notificationId);
+                case NotificationType.Info: return new Color(0.2f, 0.6f, 1f);
+                case NotificationType.Success: return new Color(0.2f, 0.8f, 0.2f);
+                case NotificationType.Warning: return new Color(1f, 0.8f, 0.2f);
+                case NotificationType.Error: return new Color(0.9f, 0.2f, 0.2f);
+                case NotificationType.Achievement: return new Color(1f, 0.8f, 0.2f);
+                case NotificationType.LevelUp: return new Color(0.6f, 0.3f, 1f);
+                case NotificationType.ItemReceived: return new Color(0.2f, 0.8f, 0.6f);
+                case NotificationType.FriendOnline: return new Color(0.3f, 0.7f, 1f);
+                case NotificationType.PartyInvite: return new Color(1f, 0.5f, 0.8f);
+                case NotificationType.MatchFound: return new Color(0.2f, 1f, 0.4f);
+                case NotificationType.System: return new Color(0.5f, 0.5f, 0.5f);
+                default: return Color.white;
             }
         }
 
-        [ServerRpc(RequireOwnership = false)]
-        public void ClearAllNotificationsServerRpc(ulong playerId, ServerRpcParams rpcParams = default)
+        // Convenience Methods
+
+        public void ShowInfoNotification(string title, string message)
         {
-            if (playerNotifications.ContainsKey(playerId))
+            ShowNotification(NotificationType.Info, title, message);
+        }
+
+        public void ShowSuccessNotification(string title, string message)
+        {
+            ShowNotification(NotificationType.Success, title, message);
+        }
+
+        public void ShowWarningNotification(string title, string message)
+        {
+            ShowNotification(NotificationType.Warning, title, message, NotificationPriority.High);
+        }
+
+        public void ShowErrorNotification(string title, string message)
+        {
+            ShowNotification(NotificationType.Error, title, message, NotificationPriority.High);
+        }
+
+        public void ShowAchievementNotification(string achievementName, string description)
+        {
+            ShowNotification(NotificationType.Achievement, $"Achievement Unlocked!", 
+                $"{achievementName}\n{description}", NotificationPriority.High, 8f);
+        }
+
+        public void ShowLevelUpNotification(int newLevel)
+        {
+            ShowNotification(NotificationType.LevelUp, "Level Up!", 
+                $"Congratulations! You reached level {newLevel}", NotificationPriority.High, 6f);
+        }
+
+        public void ShowItemReceivedNotification(string itemName, int quantity = 1)
+        {
+            string message = quantity > 1 ? $"Received {quantity}x {itemName}" : $"Received {itemName}";
+            ShowNotification(NotificationType.ItemReceived, "Item Received", message);
+        }
+
+        public void ShowFriendOnlineNotification(string friendName)
+        {
+            ShowNotification(NotificationType.FriendOnline, "Friend Online", 
+                $"{friendName} is now online");
+        }
+
+        public void ShowPartyInviteNotification(string playerName)
+        {
+            ShowNotification(NotificationType.PartyInvite, "Party Invite", 
+                $"{playerName} invited you to their party", NotificationPriority.High);
+        }
+
+        public void ShowMatchFoundNotification(string gameMode)
+        {
+            ShowNotification(NotificationType.MatchFound, "Match Found!", 
+                $"{gameMode} match is ready", NotificationPriority.Critical, 10f);
+        }
+
+        public void ShowSystemNotification(string title, string message, NotificationPriority priority = NotificationPriority.Normal)
+        {
+            ShowNotification(NotificationType.System, title, message, priority);
+        }
+
+        // Settings
+
+        public void SetMaxSimultaneousNotifications(int max)
+        {
+            maxSimultaneousNotifications = Mathf.Clamp(max, 1, 10);
+            PlayerPrefs.SetInt("Notification_MaxSimultaneous", maxSimultaneousNotifications);
+            PlayerPrefs.Save();
+        }
+
+        public void SetDefaultDuration(float duration)
+        {
+            defaultDuration = Mathf.Clamp(duration, 1f, 30f);
+            PlayerPrefs.SetFloat("Notification_DefaultDuration", defaultDuration);
+            PlayerPrefs.Save();
+        }
+
+        public void SetNotificationsEnabled(bool enabled)
+        {
+            enableNotifications = enabled;
+            PlayerPrefs.SetInt("Notification_Enabled", enabled ? 1 : 0);
+            PlayerPrefs.Save();
+
+            if (!enabled)
             {
-                playerNotifications[playerId].Clear();
-            }
-
-            if (activeNotificationQueues.ContainsKey(playerId))
-            {
-                activeNotificationQueues[playerId].Clear();
+                DismissAll();
+                notificationQueue.Clear();
             }
         }
 
-        [ClientRpc]
-        private void NotifyPlayerClientRpc(ulong playerId, string notificationId, string title, string message, NotificationType type, NotificationPriority priority, float duration)
+        public int GetQueueSize()
         {
-            // Client-side notification display
-            // Would trigger UI notification popup/toast
+            return notificationQueue.Count;
         }
 
-        public List<Notification> GetPlayerNotifications(ulong playerId) => playerNotifications.GetValueOrDefault(playerId, new List<Notification>());
-        public int GetUnreadCount(ulong playerId)
+        public int GetActiveCount()
         {
-            if (!playerNotifications.TryGetValue(playerId, out var notifications)) return 0;
-            return notifications.Count(n => !n.isRead);
+            return activeNotifications.Count;
         }
-        public List<Notification> GetUnreadNotifications(ulong playerId)
+
+        public List<Notification> GetActiveNotifications()
         {
-            if (!playerNotifications.TryGetValue(playerId, out var notifications)) return new List<Notification>();
-            return notifications.Where(n => !n.isRead).ToList();
+            return new List<Notification>(activeNotifications);
         }
     }
-
-    [Serializable]
-    public class Notification
-    {
-        public string notificationId;
-        public string title;
-        public string message;
-        public NotificationType type;
-        public NotificationPriority priority;
-        public float displayDuration;
-        public List<NotificationAction> actions;
-        public DateTime timestamp;
-        public bool isRead;
-        public bool isPersistent;
-    }
-
-    [Serializable]
-    public class NotificationAction
-    {
-        public string actionId;
-        public string actionText;
-        public ActionType actionType;
-        public string actionData;
-    }
-
-    public enum NotificationType
-    {
-        Achievement, LevelUp, Reward, QuestComplete,
-        PartyInvite, ClanInvite, FriendRequest,
-        EventStart, EventEnd, DailyReward,
-        Mail, Trade, System, Warning, Error
-    }
-
-    public enum NotificationPriority { Low, Medium, High, Critical }
-    public enum ActionType { Dismiss, OpenUI, ClaimReward, AcceptInvite, DeclineInvite, Custom }
 }
