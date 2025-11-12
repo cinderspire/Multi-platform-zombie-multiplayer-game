@@ -1,41 +1,91 @@
 using UnityEngine;
+using System;
 using System.Collections.Generic;
 using System.Linq;
-using System;
 
-namespace DeadFrontier.Statistics
+namespace ZombieGame
 {
     /// <summary>
-    /// Comprehensive statistics tracking system.
-    /// Records all player performance metrics, lifetime stats, session data, and leaderboards.
-    /// Provides detailed analytics for player progression and competitive rankings.
+    /// Statistics Tracker - Comprehensive player stat tracking
+    /// Features: All-time stats, session stats, leaderboards, achievements integration
+    /// Essential for player progression and competitive features
     /// </summary>
     public class StatisticsTracker : MonoBehaviour
     {
         public static StatisticsTracker Instance { get; private set; }
 
-        [Header("Tracking Settings")]
-        [SerializeField] private bool enableDetailedTracking = true;
-        [SerializeField] private float statSaveInterval = 60f; // Save every minute
-        [SerializeField] private int maxSessionHistory = 100;
-
-        [Header("Leaderboard Settings")]
-        [SerializeField] private int leaderboardSize = 100;
-        [SerializeField] private float leaderboardUpdateInterval = 300f; // 5 minutes
-
-        // Player statistics
-        private Dictionary<ulong, PlayerStatistics> playerStats = new Dictionary<ulong, PlayerStatistics>();
-        private Dictionary<ulong, SessionStatistics> currentSessions = new Dictionary<ulong, SessionStatistics>();
-
-        // Leaderboards
-        private Dictionary<LeaderboardType, List<LeaderboardEntry>> leaderboards = new Dictionary<LeaderboardType, List<LeaderboardEntry>>();
-        private float lastLeaderboardUpdate;
-        private float lastStatSave;
+        private PlayerStatistics allTimeStats;
+        private PlayerStatistics sessionStats;
+        private Dictionary<string, WeaponStats> weaponStats = new Dictionary<string, WeaponStats>();
 
         // Events
-        public event Action<ulong, StatType, float> OnStatChanged;
-        public event Action<ulong, SessionStatistics> OnSessionCompleted;
-        public event Action<LeaderboardType> OnLeaderboardUpdated;
+        public event Action<StatType, float> OnStatUpdated;
+        public event Action<string> OnMilestoneReached;
+
+        [Serializable]
+        public class PlayerStatistics
+        {
+            // Combat Stats
+            public int totalKills;
+            public int totalDeaths;
+            public float kdRatio;
+            public int headshots;
+            public float headshotPercent;
+            public int melee Kills;
+            public int grenadeKills;
+            public long totalDamageDealt;
+            public long totalDamageTaken;
+
+            // Survival Stats
+            public float totalPlayTime;
+            public float longestSurvivalTime;
+            public int gamesPlayed;
+            public int gamesWon;
+            public float winRate;
+            public int timesDied;
+            public int timesRevived;
+
+            // Movement Stats
+            public float distanceWalked;
+            public float distanceRan;
+            public float distanceJumped;
+            public int jumpCount;
+
+            // Economy Stats
+            public int currencyEarned;
+            public int currencySpent;
+            public int itemsLooted;
+            public int itemsCrafted;
+
+            // Social Stats
+            public int teamsJoined;
+            public int friendsAdded;
+            public int messagesSent;
+            public int voiceChatMinutes;
+
+            // Achievement Stats
+            public int achievementsUnlocked;
+            public int challengesCompleted;
+            public int milestonesReached;
+        }
+
+        [Serializable]
+        public class WeaponStats
+        {
+            public string weaponName;
+            public int kills;
+            public int shots;
+            public int hits;
+            public float accuracy;
+            public int headshots;
+            public long damageDealt;
+            public float timesUsed;
+        }
+
+        public enum StatType
+        {
+            Kills, Deaths, Headshots, Damage, PlayTime, Distance, Currency, Achievements
+        }
 
         private void Awake()
         {
@@ -43,604 +93,284 @@ namespace DeadFrontier.Statistics
             {
                 Instance = this;
                 DontDestroyOnLoad(gameObject);
+                LoadStatistics();
+                ResetSessionStats();
             }
-            else
-            {
-                Destroy(gameObject);
-            }
-        }
-
-        private void Start()
-        {
-            InitializeLeaderboards();
-            LoadAllPlayerStats();
+            else { Destroy(gameObject); }
         }
 
         private void Update()
         {
-            UpdateLeaderboards();
-            AutoSaveStats();
+            // Track play time
+            if (allTimeStats != null)
+            {
+                allTimeStats.totalPlayTime += Time.deltaTime;
+                sessionStats.totalPlayTime += Time.deltaTime;
+            }
         }
 
-        #region Initialization
+        // Stat Recording
 
-        private void InitializeLeaderboards()
+        public void RecordKill(bool isHeadshot = false, string weaponUsed = "")
         {
-            foreach (LeaderboardType type in Enum.GetValues(typeof(LeaderboardType)))
+            allTimeStats.totalKills++;
+            sessionStats.totalKills++;
+
+            if (isHeadshot)
             {
-                leaderboards[type] = new List<LeaderboardEntry>();
+                allTimeStats.headshots++;
+                sessionStats.headshots++;
             }
 
-            Debug.Log("[StatisticsTracker] Initialized leaderboards");
-        }
-
-        public void InitializePlayerStats(ulong playerId)
-        {
-            if (playerStats.ContainsKey(playerId)) return;
-
-            playerStats[playerId] = new PlayerStatistics
+            if (!string.IsNullOrEmpty(weaponUsed))
             {
-                playerId = playerId,
-                lifetime = new LifetimeStats(),
-                combat = new CombatStats(),
-                survival = new SurvivalStats(),
-                economy = new EconomyStats(),
-                social = new SocialStats(),
-                sessionHistory = new List<SessionStatistics>()
-            };
-
-            Debug.Log($"[StatisticsTracker] Initialized stats for player {playerId}");
-        }
-
-        #endregion
-
-        #region Session Tracking
-
-        public void StartSession(ulong playerId)
-        {
-            var session = new SessionStatistics
-            {
-                playerId = playerId,
-                sessionStart = DateTime.UtcNow,
-                kills = 0,
-                deaths = 0,
-                assists = 0,
-                damageDealt = 0,
-                damageTaken = 0,
-                distanceTraveled = 0,
-                itemsLooted = 0,
-                currencyEarned = 0,
-                missionsCompleted = 0
-            };
-
-            currentSessions[playerId] = session;
-
-            Debug.Log($"[StatisticsTracker] Session started for player {playerId}");
-        }
-
-        public void EndSession(ulong playerId)
-        {
-            if (!currentSessions.ContainsKey(playerId)) return;
-
-            var session = currentSessions[playerId];
-            session.sessionEnd = DateTime.UtcNow;
-            session.duration = (float)(session.sessionEnd - session.sessionStart).TotalSeconds;
-
-            // Add to history
-            if (!playerStats.ContainsKey(playerId))
-            {
-                InitializePlayerStats(playerId);
+                RecordWeaponKill(weaponUsed, isHeadshot);
             }
 
-            playerStats[playerId].sessionHistory.Add(session);
-
-            // Limit history size
-            if (playerStats[playerId].sessionHistory.Count > maxSessionHistory)
-            {
-                playerStats[playerId].sessionHistory.RemoveAt(0);
-            }
-
-            currentSessions.Remove(playerId);
-
-            OnSessionCompleted?.Invoke(playerId, session);
-
-            SavePlayerStats(playerId);
-
-            Debug.Log($"[StatisticsTracker] Session ended for player {playerId}. Duration: {session.duration:F0}s");
+            UpdateKDRatio();
+            OnStatUpdated?.Invoke(StatType.Kills, allTimeStats.totalKills);
+            CheckMilestones();
+            SaveStatistics();
         }
 
-        #endregion
-
-        #region Stat Recording
-
-        public void RecordKill(ulong killerId, ulong victimId, string weaponId = null)
+        public void RecordDeath()
         {
-            // Killer stats
-            if (currentSessions.ContainsKey(killerId))
-            {
-                currentSessions[killerId].kills++;
-            }
+            allTimeStats.totalDeaths++;
+            allTimeStats.timesDied++;
+            sessionStats.totalDeaths++;
+            sessionStats.timesDied++;
 
-            IncrementStat(killerId, StatType.Kills, 1);
-            IncrementCombatStat(killerId, s => s.totalKills++);
-
-            if (!string.IsNullOrEmpty(weaponId))
-            {
-                IncrementWeaponKills(killerId, weaponId);
-            }
-
-            // Victim stats
-            if (currentSessions.ContainsKey(victimId))
-            {
-                currentSessions[victimId].deaths++;
-            }
-
-            IncrementStat(victimId, StatType.Deaths, 1);
-            IncrementCombatStat(victimId, s => s.totalDeaths++);
-
-            // Update K/D ratio
-            UpdateKDRatio(killerId);
-            UpdateKDRatio(victimId);
+            UpdateKDRatio();
+            OnStatUpdated?.Invoke(StatType.Deaths, allTimeStats.totalDeaths);
+            SaveStatistics();
         }
 
-        public void RecordAssist(ulong playerId)
+        public void RecordDamage(long damage, bool dealt = true)
         {
-            if (currentSessions.ContainsKey(playerId))
+            if (dealt)
             {
-                currentSessions[playerId].assists++;
-            }
-
-            IncrementStat(playerId, StatType.Assists, 1);
-            IncrementCombatStat(playerId, s => s.totalAssists++);
-        }
-
-        public void RecordDamage(ulong dealerId, float damage)
-        {
-            if (currentSessions.ContainsKey(dealerId))
-            {
-                currentSessions[dealerId].damageDealt += damage;
-            }
-
-            IncrementStat(dealerId, StatType.DamageDealt, damage);
-            IncrementCombatStat(dealerId, s => s.totalDamageDealt += damage);
-        }
-
-        public void RecordDamageTaken(ulong playerId, float damage)
-        {
-            if (currentSessions.ContainsKey(playerId))
-            {
-                currentSessions[playerId].damageTaken += damage;
-            }
-
-            IncrementStat(playerId, StatType.DamageTaken, damage);
-            IncrementCombatStat(playerId, s => s.totalDamageTaken += damage);
-        }
-
-        public void RecordHeadshot(ulong playerId)
-        {
-            IncrementStat(playerId, StatType.Headshots, 1);
-            IncrementCombatStat(playerId, s => s.totalHeadshots++);
-        }
-
-        public void RecordDistance(ulong playerId, float distance)
-        {
-            if (currentSessions.ContainsKey(playerId))
-            {
-                currentSessions[playerId].distanceTraveled += distance;
-            }
-
-            IncrementStat(playerId, StatType.DistanceTraveled, distance);
-            IncrementSurvivalStat(playerId, s => s.totalDistanceTraveled += distance);
-        }
-
-        public void RecordExtraction(ulong playerId, bool successful)
-        {
-            IncrementSurvivalStat(playerId, s => s.totalExtractions++);
-
-            if (successful)
-            {
-                IncrementStat(playerId, StatType.SuccessfulExtractions, 1);
-                IncrementSurvivalStat(playerId, s => s.successfulExtractions++);
+                allTimeStats.totalDamageDealt += damage;
+                sessionStats.totalDamageDealt += damage;
             }
             else
             {
-                IncrementSurvivalStat(playerId, s => s.failedExtractions++);
+                allTimeStats.totalDamageTaken += damage;
+                sessionStats.totalDamageTaken += damage;
             }
 
-            // Update extraction rate
-            UpdateExtractionRate(playerId);
+            OnStatUpdated?.Invoke(StatType.Damage, allTimeStats.totalDamageDealt);
+            SaveStatistics();
         }
 
-        public void RecordItemLooted(ulong playerId)
+        public void RecordDistance(float distance, bool running = false)
         {
-            if (currentSessions.ContainsKey(playerId))
+            if (running)
             {
-                currentSessions[playerId].itemsLooted++;
+                allTimeStats.distanceRan += distance;
+                sessionStats.distanceRan += distance;
             }
-
-            IncrementStat(playerId, StatType.ItemsLooted, 1);
-            IncrementEconomyStat(playerId, s => s.totalItemsLooted++);
-        }
-
-        public void RecordCurrencyEarned(ulong playerId, int amount)
-        {
-            if (currentSessions.ContainsKey(playerId))
+            else
             {
-                currentSessions[playerId].currencyEarned += amount;
+                allTimeStats.distanceWalked += distance;
+                sessionStats.distanceWalked += distance;
             }
 
-            IncrementStat(playerId, StatType.CurrencyEarned, amount);
-            IncrementEconomyStat(playerId, s => s.totalCurrencyEarned += amount);
+            OnStatUpdated?.Invoke(StatType.Distance, allTimeStats.distanceWalked + allTimeStats.distanceRan);
         }
 
-        public void RecordCurrencySpent(ulong playerId, int amount)
+        public void RecordGameResult(bool won, float survivalTime)
         {
-            IncrementStat(playerId, StatType.CurrencySpent, amount);
-            IncrementEconomyStat(playerId, s => s.totalCurrencySpent += amount);
-        }
+            allTimeStats.gamesPlayed++;
+            sessionStats.gamesPlayed++;
 
-        public void RecordMissionCompleted(ulong playerId)
-        {
-            if (currentSessions.ContainsKey(playerId))
+            if (won)
             {
-                currentSessions[playerId].missionsCompleted++;
+                allTimeStats.gamesWon++;
+                sessionStats.gamesWon++;
             }
 
-            IncrementStat(playerId, StatType.MissionsCompleted, 1);
-            IncrementLifetimeStat(playerId, s => s.totalMissionsCompleted++);
+            if (survivalTime > allTimeStats.longestSurvivalTime)
+            {
+                allTimeStats.longestSurvivalTime = survivalTime;
+            }
+
+            UpdateWinRate();
+            SaveStatistics();
         }
 
-        public void RecordPlayTime(ulong playerId, float seconds)
+        public void RecordWeaponShot(string weaponName, bool hit = false, bool headshot = false, long damage = 0)
         {
-            IncrementStat(playerId, StatType.PlayTime, seconds);
-            IncrementLifetimeStat(playerId, s => s.totalPlayTimeSeconds += seconds);
+            if (!weaponStats.ContainsKey(weaponName))
+            {
+                weaponStats[weaponName] = new WeaponStats { weaponName = weaponName };
+            }
+
+            var stats = weaponStats[weaponName];
+            stats.shots++;
+
+            if (hit)
+            {
+                stats.hits++;
+                stats.damageDealt += damage;
+            }
+
+            if (headshot)
+            {
+                stats.headshots++;
+            }
+
+            stats.accuracy = stats.shots > 0 ? (float)stats.hits / stats.shots * 100f : 0f;
         }
 
-        #endregion
-
-        #region Stat Calculations
-
-        private void UpdateKDRatio(ulong playerId)
+        private void RecordWeaponKill(string weaponName, bool headshot)
         {
-            if (!playerStats.ContainsKey(playerId)) return;
+            if (!weaponStats.ContainsKey(weaponName))
+            {
+                weaponStats[weaponName] = new WeaponStats { weaponName = weaponName };
+            }
 
-            var combat = playerStats[playerId].combat;
-            combat.kdRatio = combat.totalDeaths > 0
-                ? (float)combat.totalKills / combat.totalDeaths
-                : combat.totalKills;
+            weaponStats[weaponName].kills++;
+            if (headshot) weaponStats[weaponName].headshots++;
         }
 
-        private void UpdateExtractionRate(ulong playerId)
-        {
-            if (!playerStats.ContainsKey(playerId)) return;
+        // Calculations
 
-            var survival = playerStats[playerId].survival;
-            survival.extractionRate = survival.totalExtractions > 0
-                ? (float)survival.successfulExtractions / survival.totalExtractions
+        private void UpdateKDRatio()
+        {
+            allTimeStats.kdRatio = allTimeStats.totalDeaths > 0 
+                ? (float)allTimeStats.totalKills / allTimeStats.totalDeaths 
+                : allTimeStats.totalKills;
+
+            allTimeStats.headshotPercent = allTimeStats.totalKills > 0
+                ? (float)allTimeStats.headshots / allTimeStats.totalKills * 100f
                 : 0f;
         }
 
-        private void IncrementWeaponKills(ulong playerId, string weaponId)
+        private void UpdateWinRate()
         {
-            if (!playerStats.ContainsKey(playerId))
+            allTimeStats.winRate = allTimeStats.gamesPlayed > 0
+                ? (float)allTimeStats.gamesWon / allTimeStats.gamesPlayed * 100f
+                : 0f;
+        }
+
+        // Milestones
+
+        private void CheckMilestones()
+        {
+            CheckKillMilestones();
+            CheckPlayTimeMilestones();
+        }
+
+        private void CheckKillMilestones()
+        {
+            int[] milestones = { 10, 50, 100, 500, 1000, 5000, 10000 };
+            foreach (int milestone in milestones)
             {
-                InitializePlayerStats(playerId);
-            }
-
-            var combat = playerStats[playerId].combat;
-
-            if (!combat.weaponKills.ContainsKey(weaponId))
-            {
-                combat.weaponKills[weaponId] = 0;
-            }
-
-            combat.weaponKills[weaponId]++;
-        }
-
-        #endregion
-
-        #region Helper Methods
-
-        private void IncrementStat(ulong playerId, StatType statType, float amount)
-        {
-            OnStatChanged?.Invoke(playerId, statType, amount);
-        }
-
-        private void IncrementLifetimeStat(ulong playerId, Action<LifetimeStats> action)
-        {
-            if (!playerStats.ContainsKey(playerId))
-            {
-                InitializePlayerStats(playerId);
-            }
-
-            action(playerStats[playerId].lifetime);
-        }
-
-        private void IncrementCombatStat(ulong playerId, Action<CombatStats> action)
-        {
-            if (!playerStats.ContainsKey(playerId))
-            {
-                InitializePlayerStats(playerId);
-            }
-
-            action(playerStats[playerId].combat);
-        }
-
-        private void IncrementSurvivalStat(ulong playerId, Action<SurvivalStats> action)
-        {
-            if (!playerStats.ContainsKey(playerId))
-            {
-                InitializePlayerStats(playerId);
-            }
-
-            action(playerStats[playerId].survival);
-        }
-
-        private void IncrementEconomyStat(ulong playerId, Action<EconomyStats> action)
-        {
-            if (!playerStats.ContainsKey(playerId))
-            {
-                InitializePlayerStats(playerId);
-            }
-
-            action(playerStats[playerId].economy);
-        }
-
-        #endregion
-
-        #region Leaderboards
-
-        private void UpdateLeaderboards()
-        {
-            if (Time.time - lastLeaderboardUpdate < leaderboardUpdateInterval) return;
-
-            UpdateLeaderboard(LeaderboardType.Kills, stats => stats.combat.totalKills);
-            UpdateLeaderboard(LeaderboardType.KDRatio, stats => stats.combat.kdRatio);
-            UpdateLeaderboard(LeaderboardType.DamageDealt, stats => stats.combat.totalDamageDealt);
-            UpdateLeaderboard(LeaderboardType.Headshots, stats => stats.combat.totalHeadshots);
-            UpdateLeaderboard(LeaderboardType.ExtractionRate, stats => stats.survival.extractionRate);
-            UpdateLeaderboard(LeaderboardType.CurrencyEarned, stats => stats.economy.totalCurrencyEarned);
-            UpdateLeaderboard(LeaderboardType.PlayTime, stats => stats.lifetime.totalPlayTimeSeconds);
-            UpdateLeaderboard(LeaderboardType.MissionsCompleted, stats => stats.lifetime.totalMissionsCompleted);
-
-            lastLeaderboardUpdate = Time.time;
-        }
-
-        private void UpdateLeaderboard(LeaderboardType type, Func<PlayerStatistics, float> statSelector)
-        {
-            leaderboards[type] = playerStats.Values
-                .OrderByDescending(statSelector)
-                .Take(leaderboardSize)
-                .Select((stats, index) => new LeaderboardEntry
+                if (allTimeStats.totalKills == milestone)
                 {
-                    rank = index + 1,
-                    playerId = stats.playerId,
-                    score = statSelector(stats)
-                })
-                .ToList();
-
-            OnLeaderboardUpdated?.Invoke(type);
+                    allTimeStats.milestonesReached++;
+                    OnMilestoneReached?.Invoke($"{milestone} Total Kills");
+                }
+            }
         }
 
-        #endregion
-
-        #region Persistence
-
-        private void LoadAllPlayerStats()
+        private void CheckPlayTimeMilestones()
         {
-            // In production, load from database
-            Debug.Log("[StatisticsTracker] Statistics tracker initialized");
-        }
-
-        private void AutoSaveStats()
-        {
-            if (Time.time - lastStatSave < statSaveInterval) return;
-
-            foreach (var playerId in playerStats.Keys)
+            float[] milestones = { 3600, 36000, 360000 }; // 1h, 10h, 100h
+            foreach (float milestone in milestones)
             {
-                SavePlayerStats(playerId);
+                if (allTimeStats.totalPlayTime >= milestone && 
+                    allTimeStats.totalPlayTime - Time.deltaTime < milestone)
+                {
+                    allTimeStats.milestonesReached++;
+                    OnMilestoneReached?.Invoke($"{milestone/3600}h Played");
+                }
+            }
+        }
+
+        // Queries
+
+        public PlayerStatistics GetAllTimeStats()
+        {
+            return allTimeStats;
+        }
+
+        public PlayerStatistics GetSessionStats()
+        {
+            return sessionStats;
+        }
+
+        public WeaponStats GetWeaponStats(string weaponName)
+        {
+            return weaponStats.ContainsKey(weaponName) ? weaponStats[weaponName] : null;
+        }
+
+        public List<WeaponStats> GetAllWeaponStats()
+        {
+            return new List<WeaponStats>(weaponStats.Values);
+        }
+
+        public WeaponStats GetFavoriteWeapon()
+        {
+            if (weaponStats.Count == 0) return null;
+            return weaponStats.Values.OrderByDescending(w => w.kills).FirstOrDefault();
+        }
+
+        public string GetStatsReport()
+        {
+            return $"=== PLAYER STATISTICS ===\n" +
+                   $"K/D Ratio: {allTimeStats.kdRatio:F2}\n" +
+                   $"Total Kills: {allTimeStats.totalKills}\n" +
+                   $"Headshot %: {allTimeStats.headshotPercent:F1}%\n" +
+                   $"Win Rate: {allTimeStats.winRate:F1}%\n" +
+                   $"Play Time: {TimeSpan.FromSeconds(allTimeStats.totalPlayTime):hh\\:mm\\:ss}\n" +
+                   $"Distance: {(allTimeStats.distanceWalked + allTimeStats.distanceRan)/1000f:F2}km";
+        }
+
+        // Save/Load
+
+        private void SaveStatistics()
+        {
+            string json = JsonUtility.ToJson(allTimeStats, true);
+            PlayerPrefs.SetString("Stats_AllTime", json);
+
+            // Save weapon stats
+            foreach (var kvp in weaponStats)
+            {
+                string weaponJson = JsonUtility.ToJson(kvp.Value);
+                PlayerPrefs.SetString($"WeaponStats_{kvp.Key}", weaponJson);
             }
 
-            lastStatSave = Time.time;
+            PlayerPrefs.Save();
         }
 
-        private void SavePlayerStats(ulong playerId)
+        private void LoadStatistics()
         {
-            // In production, save to database
-        }
-
-        #endregion
-
-        #region Public Getters
-
-        public PlayerStatistics GetPlayerStats(ulong playerId)
-        {
-            if (!playerStats.ContainsKey(playerId))
+            string json = PlayerPrefs.GetString("Stats_AllTime", "");
+            if (!string.IsNullOrEmpty(json))
             {
-                InitializePlayerStats(playerId);
+                allTimeStats = JsonUtility.FromJson<PlayerStatistics>(json);
+            }
+            else
+            {
+                allTimeStats = new PlayerStatistics();
             }
 
-            return playerStats[playerId];
+            Debug.Log("[Statistics] Statistics loaded");
         }
 
-        public SessionStatistics GetCurrentSession(ulong playerId)
+        public void ResetSessionStats()
         {
-            return currentSessions.ContainsKey(playerId) ? currentSessions[playerId] : null;
+            sessionStats = new PlayerStatistics();
         }
 
-        public List<SessionStatistics> GetSessionHistory(ulong playerId, int count = 10)
+        public void ResetAllStats()
         {
-            if (!playerStats.ContainsKey(playerId)) return new List<SessionStatistics>();
-
-            return playerStats[playerId].sessionHistory
-                .OrderByDescending(s => s.sessionStart)
-                .Take(count)
-                .ToList();
+            allTimeStats = new PlayerStatistics();
+            sessionStats = new PlayerStatistics();
+            weaponStats.Clear();
+            SaveStatistics();
+            Debug.Log("[Statistics] All statistics reset");
         }
-
-        public List<LeaderboardEntry> GetLeaderboard(LeaderboardType type)
-        {
-            return leaderboards.ContainsKey(type)
-                ? new List<LeaderboardEntry>(leaderboards[type])
-                : new List<LeaderboardEntry>();
-        }
-
-        public int GetLeaderboardRank(ulong playerId, LeaderboardType type)
-        {
-            if (!leaderboards.ContainsKey(type)) return -1;
-
-            var entry = leaderboards[type].FirstOrDefault(e => e.playerId == playerId);
-            return entry != null ? entry.rank : -1;
-        }
-
-        public float GetKDRatio(ulong playerId)
-        {
-            return GetPlayerStats(playerId).combat.kdRatio;
-        }
-
-        public float GetExtractionRate(ulong playerId)
-        {
-            return GetPlayerStats(playerId).survival.extractionRate;
-        }
-
-        public string GetFavoriteWeapon(ulong playerId)
-        {
-            var stats = GetPlayerStats(playerId);
-
-            if (stats.combat.weaponKills.Count == 0) return "None";
-
-            return stats.combat.weaponKills
-                .OrderByDescending(kvp => kvp.Value)
-                .First()
-                .Key;
-        }
-
-        public Dictionary<string, int> GetWeaponKills(ulong playerId)
-        {
-            return new Dictionary<string, int>(GetPlayerStats(playerId).combat.weaponKills);
-        }
-
-        #endregion
     }
-
-    #region Data Classes
-
-    public class PlayerStatistics
-    {
-        public ulong playerId;
-        public LifetimeStats lifetime;
-        public CombatStats combat;
-        public SurvivalStats survival;
-        public EconomyStats economy;
-        public SocialStats social;
-        public List<SessionStatistics> sessionHistory;
-    }
-
-    public class LifetimeStats
-    {
-        public float totalPlayTimeSeconds;
-        public int totalMissionsCompleted;
-        public int totalAchievementsUnlocked;
-        public DateTime accountCreated;
-        public DateTime lastPlayed;
-    }
-
-    public class CombatStats
-    {
-        public int totalKills;
-        public int totalDeaths;
-        public int totalAssists;
-        public float kdRatio;
-        public float totalDamageDealt;
-        public float totalDamageTaken;
-        public int totalHeadshots;
-        public int longestKillStreak;
-        public Dictionary<string, int> weaponKills = new Dictionary<string, int>();
-    }
-
-    public class SurvivalStats
-    {
-        public int totalExtractions;
-        public int successfulExtractions;
-        public int failedExtractions;
-        public float extractionRate;
-        public float totalDistanceTraveled;
-        public int timesRevived;
-        public int timesIncapacitated;
-        public float longestSurvivalTime;
-    }
-
-    public class EconomyStats
-    {
-        public int totalCurrencyEarned;
-        public int totalCurrencySpent;
-        public int totalItemsLooted;
-        public int totalItemsCrafted;
-        public int totalTradesMade;
-        public int mostValuableItemFound;
-    }
-
-    public class SocialStats
-    {
-        public int totalFriends;
-        public int totalClanMembers;
-        public int partiesJoined;
-        public int matchesWithFriends;
-        public int messagesSeint;
-    }
-
-    public class SessionStatistics
-    {
-        public ulong playerId;
-        public DateTime sessionStart;
-        public DateTime sessionEnd;
-        public float duration;
-        public int kills;
-        public int deaths;
-        public int assists;
-        public float damageDealt;
-        public float damageTaken;
-        public float distanceTraveled;
-        public int itemsLooted;
-        public int currencyEarned;
-        public int missionsCompleted;
-    }
-
-    public class LeaderboardEntry
-    {
-        public int rank;
-        public ulong playerId;
-        public float score;
-    }
-
-    public enum StatType
-    {
-        Kills,
-        Deaths,
-        Assists,
-        DamageDealt,
-        DamageTaken,
-        Headshots,
-        DistanceTraveled,
-        SuccessfulExtractions,
-        ItemsLooted,
-        CurrencyEarned,
-        CurrencySpent,
-        MissionsCompleted,
-        PlayTime
-    }
-
-    public enum LeaderboardType
-    {
-        Kills,
-        KDRatio,
-        DamageDealt,
-        Headshots,
-        ExtractionRate,
-        CurrencyEarned,
-        PlayTime,
-        MissionsCompleted
-    }
-
-    #endregion
 }
